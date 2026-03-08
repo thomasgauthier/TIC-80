@@ -123,6 +123,7 @@ typedef struct
 
     bool checkNewVersion;
     bool cli;
+    bool mcp;
     bool soft;
     bool trim;
 

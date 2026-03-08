@@ -82,6 +82,7 @@
     macro(soft,         int,    BOOLEAN,    "",         "use software rendering")           \
     macro(fs,           char*,  STRING,     "=<str>",   "path to the file system folder")   \
     macro(scale,        s32,    INTEGER,    "=<int>",   "main window scale")                \
+    macro(mcp,          int,    BOOLEAN,    "",         "enable MCP stdio mode")            \
     macro(cmd,          char*,  STRING,     "=<str>",   "run commands in the console")      \
     macro(keepcmd,      int,    BOOLEAN,    "",         "re-execute commands on every run") \
     macro(version,      int,    BOOLEAN,    "",         "print program version")            \

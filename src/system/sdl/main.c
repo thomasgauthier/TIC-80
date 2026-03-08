@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
 
 #ifdef __SWITCH__
 // from studio/studio.h
@@ -76,6 +77,107 @@ extern void gotoMenu(Studio* studio);
 #define KBD_ROWS 17
 
 #define LOCK_MUTEX(MUTEX) SDL_LockMutex(MUTEX); SCOPE(SDL_UnlockMutex(MUTEX))
+
+static bool hasArg(s32 argc, char** argv, const char* arg)
+{
+    for(s32 i = 1; i < argc; i++)
+        if(strcmp(argv[i], arg) == 0)
+            return true;
+
+    return false;
+}
+
+static bool findMethod(const char* line, const char* method)
+{
+    char pattern[96];
+    snprintf(pattern, sizeof pattern, "\"method\":\"%s\"", method);
+    if(strstr(line, pattern)) return true;
+
+    snprintf(pattern, sizeof pattern, "\"method\": \"%s\"", method);
+    return strstr(line, pattern) != NULL;
+}
+
+static bool readId(const char* line, s32* id)
+{
+    const char* ptr = strstr(line, "\"id\"");
+    if(!ptr) return false;
+
+    ptr = strchr(ptr, ':');
+    if(!ptr) return false;
+    ptr++;
+
+    while(*ptr && isspace((unsigned char)*ptr)) ptr++;
+
+    if(!isdigit((unsigned char)*ptr) && *ptr != '-') return false;
+
+    *id = (s32)strtol(ptr, NULL, 10);
+    return true;
+}
+
+static void writeMcpResult(s32 id, const char* resultJson)
+{
+    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, resultJson);
+    fflush(stdout);
+}
+
+static void writeMcpError(s32 id, s32 code, const char* message)
+{
+    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{\"code\":%d,\"message\":\"%s\"}}\n", id, code, message);
+    fflush(stdout);
+}
+
+static s32 runMcpStdio()
+{
+#if defined(__TIC_LINUX__)
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
+    // Keep stderr for diagnostics; stdout is reserved for MCP JSON-RPC frames.
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
+
+    char line[8192];
+
+    while(fgets(line, sizeof line, stdin))
+    {
+        s32 id = 0;
+        bool hasId = readId(line, &id);
+
+        if(findMethod(line, "initialize"))
+        {
+            if(hasId)
+                writeMcpResult(id, "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}}}");
+            continue;
+        }
+
+        if(findMethod(line, "notifications/initialized"))
+            continue;
+
+        if(findMethod(line, "tools/list"))
+        {
+            if(hasId)
+                writeMcpResult(id, "{\"tools\":[{\"name\":\"tic.echo\",\"description\":\"Echo placeholder tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"additionalProperties\":true}}]}");
+            continue;
+        }
+
+        if(findMethod(line, "tools/call"))
+        {
+            if(!hasId) continue;
+
+            if(strstr(line, "\"name\":\"tic.echo\"") || strstr(line, "\"name\": \"tic.echo\""))
+                writeMcpResult(id, "{\"content\":[{\"type\":\"text\",\"text\":\"tic.echo: ok\"}],\"isError\":false}");
+            else
+                writeMcpResult(id, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
+
+            continue;
+        }
+
+        if(hasId)
+            writeMcpError(id, -32601, "Method not found");
+    }
+
+    return 0;
+}
 
 enum
 {
@@ -1687,7 +1789,7 @@ static void loadCrtShader()
 
     if(!vertex)
     {
-        printf("Failed to load vertex shader: %s\n", GPU_GetShaderMessage());
+        fprintf(stderr, "Failed to load vertex shader: %s\n", GPU_GetShaderMessage());
         return;
     }
 
@@ -1695,7 +1797,7 @@ static void loadCrtShader()
 
     if(!pixel)
     {
-        printf("Failed to load pixel shader: %s\n", GPU_GetShaderMessage());
+        fprintf(stderr, "Failed to load pixel shader: %s\n", GPU_GetShaderMessage());
         return;
     }
 
@@ -1711,7 +1813,7 @@ static void loadCrtShader()
     }
     else
     {
-        printf("Failed to link shader program: %s\n", GPU_GetShaderMessage());
+        fprintf(stderr, "Failed to link shader program: %s\n", GPU_GetShaderMessage());
     }
 }
 #endif
@@ -2116,6 +2218,9 @@ static s32 emsStart(s32 argc, char **argv, const char* folder)
 
 s32 main(s32 argc, char **argv)
 {
+    if(hasArg(argc, argv, "--mcp"))
+        return runMcpStdio();
+
 #if defined(__TIC_WINDOWS__)
     {
         CONSOLE_SCREEN_BUFFER_INFO info;

@@ -491,10 +491,15 @@ static bool iswrap(char sym)
     return isspace(sym);
 }
 
+static FILE* getOutputStream(Console* console)
+{
+    return console->args.mcp ? stderr : stdout;
+}
+
 static void consolePrintOffset(Console* console, const char* text, u8 color, s32 wrapLineOffset)
 {
 #ifndef BAREMETALPI
-    printf("%s", text);
+    fprintf(getOutputStream(console), "%s", text);
 #endif
 
     console->cursor.pos = cursorPos(console);
@@ -1649,7 +1654,7 @@ static void onClsCommand(Console* console)
     ZEROMEM(console->cursor);
     ZEROMEM(console->input);
 
-    printf("\r");
+    fprintf(getOutputStream(console), "\r");
 
     commandDoneLine(console, false);
 }
@@ -2128,7 +2133,7 @@ static void onExportGet(const net_get_data* data)
     case net_get_progress:
         {
             console->cursor.pos.x = 0;
-            printf("\r");
+            fprintf(getOutputStream(console), "\r");
             printBack(console, "GET ");
             printFront(console, data->url);
 
@@ -3599,7 +3604,7 @@ static void onHelp_commands(Console* console)
 static void printTable(Console* console, const char* text)
 {
 #ifndef BAREMETALPI
-    printf("%s", text);
+    fprintf(getOutputStream(console), "%s", text);
 #endif
 
     for(const char* textPointer = text, *endText = textPointer + strlen(text); textPointer != endText;)
@@ -3962,7 +3967,7 @@ static void processConsoleCommand(Console* console)
 
     if(commandSize)
     {
-        printf("%s", console->input.text);
+        fprintf(getOutputStream(console), "%s", console->input.text);
         appendHistory(console, console->input.text);
         processCommand(console, console->input.text);
     }
@@ -4569,14 +4574,14 @@ void initConsole(Console* console, Studio* studio, tic_fs* fs, tic_net* net, Con
         for(const char* ptr = console->text, *end = ptr + STUDIO_TEXT_BUFFER_SIZE;
             ptr < end; ptr += CONSOLE_BUFFER_WIDTH)
             if(*ptr)
-                puts(ptr);
+                fprintf(getOutputStream(console), "%s\n", ptr);
     }
 
     if (args.cart)
     {
         if (!cmdLoadCart(console, args.cart))
         {
-            printf("error: cart `%s` not loaded\n", args.cart);
+            fprintf(getOutputStream(console), "error: cart `%s` not loaded\n", args.cart);
             exit(1);
         }
         else

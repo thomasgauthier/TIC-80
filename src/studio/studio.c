@@ -2756,10 +2756,11 @@ Studio* studio_create(s32 argc, char **argv, s32 samplerate, tic80_pixel_color_f
     setbuf(stdout, NULL);
 
     StartArgs args = parseArgs(argc, argv);
+    FILE* out = args.mcp ? stderr : stdout;
 
     if (args.version)
     {
-        printf("%s\n", TIC_VERSION);
+        fprintf(out, "%s\n", TIC_VERSION);
         exit(0);
     }
 
@@ -2872,7 +2873,7 @@ Studio* studio_create(s32 argc, char **argv, s32 samplerate, tic80_pixel_color_f
 
     if (studio->config->data.uiScale > maxscale)
     {
-        printf("Overriding specified uiScale of %i; the maximum your screen will accommodate is %i", studio->config->data.uiScale, maxscale);
+        fprintf(out, "Overriding specified uiScale of %i; the maximum your screen will accommodate is %i", studio->config->data.uiScale, maxscale);
         studio->config->data.uiScale = maxscale;
     }
 
@@ -2898,6 +2899,7 @@ Studio* studio_create(s32 argc, char **argv, s32 samplerate, tic80_pixel_color_f
     studio->config->data.options.fullscreen |= args.fullscreen;
     studio->config->data.options.vsync      |= args.vsync;
     studio->config->data.soft               |= args.soft;
+    studio->config->data.mcp                |= args.mcp;
     studio->config->data.cli                |= args.cli;
 
 #if defined(BUILD_EDITORS)
