@@ -8,28 +8,43 @@ fi
 
 BIN="$1"
 TMP_DIR="$(mktemp -d)"
-REQ="$TMP_DIR/req.jsonl"
+REQ_PIPE="$TMP_DIR/req.pipe"
 OUT="$TMP_DIR/out.jsonl"
 ERR="$TMP_DIR/err.log"
+RUN_PID=""
 
 cleanup() {
+  if [ -n "$RUN_PID" ] && kill -0 "$RUN_PID" 2>/dev/null; then
+    kill "$RUN_PID" 2>/dev/null || true
+    wait "$RUN_PID" 2>/dev/null || true
+  fi
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
-cat > "$REQ" <<'EOF'
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}
-{"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/list"}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"help commands"}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"this_command_does_not_exist"}}}
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"dir"}}}
-EOF
+mkfifo "$REQ_PIPE"
 
 set +e
-xvfb-run --auto-servernum "$BIN" --mcp < "$REQ" > "$OUT" 2> "$ERR"
+xvfb-run --auto-servernum "$BIN" --mcp < "$REQ_PIPE" > "$OUT" 2> "$ERR" &
+RUN_PID="$!"
+set -e
+
+exec 3> "$REQ_PIPE"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"help commands"}}}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"this_command_does_not_exist"}}}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"run"}}}' >&3
+sleep 5
+printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"capture_screenshot","arguments":{"path":"mcp_smoke_capture.png"}}}' >&3
+exec 3>&-
+
+set +e
+wait "$RUN_PID"
 RUN_STATUS=$?
 set -e
+RUN_PID=""
 
 if [ "$RUN_STATUS" -ne 0 ]; then
   echo "MCP process failed with exit code $RUN_STATUS" >&2
@@ -44,6 +59,7 @@ grep -q '"id":1' "$OUT"
 grep -q '"protocolVersion":"2025-03-26"' "$OUT"
 grep -q '"id":2' "$OUT"
 grep -q '"name":"run_command"' "$OUT"
+grep -q '"name":"capture_screenshot"' "$OUT"
 grep -q '"id":3' "$OUT"
 grep '"id":3' "$OUT" | grep -q '"isError":false'
 grep -q 'Console commands:' "$OUT"
@@ -52,6 +68,17 @@ grep '"id":4' "$OUT" | grep -q '"isError":true'
 grep '"id":4' "$OUT" | grep -qi 'unknown command'
 grep -q '"id":5' "$OUT"
 grep '"id":5' "$OUT" | grep -q '"isError":false'
+grep -q '"id":6' "$OUT"
+grep '"id":6' "$OUT" | grep -q '"isError":false'
+grep '"id":6' "$OUT" | grep -q 'saved screenshot: mcp_smoke_capture.png'
+
+CAPTURE_PATH="$(sed -n 's/.*"id":6.*saved screenshot: [^)]*(\([^)]*\)).*/\1/p' "$OUT")"
+if [ -z "$CAPTURE_PATH" ] || [ ! -s "$CAPTURE_PATH" ]; then
+  echo "capture_screenshot did not produce a valid file" >&2
+  echo "stdout: $OUT" >&2
+  echo "stderr: $ERR" >&2
+  exit 1
+fi
 
 echo "MCP stdio smoke test passed."
 echo "stdout: $OUT"

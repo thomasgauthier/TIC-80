@@ -121,3 +121,4 @@ void initConsole(Console*, Studio* studio, struct tic_fs* fs, struct tic_net* ne
 void freeConsole(Console* console);
 void forceAutoSave(Console* console, const char* cart_name);
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError);
+char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError);

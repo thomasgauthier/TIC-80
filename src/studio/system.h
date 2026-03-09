@@ -171,6 +171,7 @@ void studio_exit(Studio* studio);
 void studio_delete(Studio* studio);
 const StudioConfig* studio_config(Studio* studio);
 char* studio_run_command_mcp(Studio* studio, const char* command, bool* isError);
+char* studio_capture_screenshot_mcp(Studio* studio, const char* path, bool* isError);
 
 Studio* studio_create(s32 argc, char **argv, s32 samplerate, tic80_pixel_color_format format, const char* appFolder, s32 maxscale, tic_layout keyboardLayout);
 

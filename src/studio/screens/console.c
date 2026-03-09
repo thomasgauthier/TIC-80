@@ -3917,6 +3917,75 @@ static void processCommand(Console* console, const char* text)
     else commandDone(console);
 }
 
+char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError)
+{
+    if(isError)
+        *isError = true;
+
+    if(console == NULL || console->tic == NULL || console->fs == NULL)
+        return strdup("mcp screenshot capture unavailable");
+
+    const char* requested = path && *path ? path : "mcp_capture.png";
+    char filename[TICNAME_MAX];
+    const char* out = requested;
+
+    if(!tic_tool_has_ext(requested, PngExt))
+    {
+        if(strlen(requested) + strlen(PngExt) >= sizeof filename)
+            return strdup("screenshot path is too long");
+
+        snprintf(filename, sizeof filename, "%s%s", requested, PngExt);
+        out = filename;
+    }
+    else if(strlen(requested) >= sizeof filename)
+        return strdup("screenshot path is too long");
+
+    png_img img = {TIC80_WIDTH, TIC80_HEIGHT, malloc(TIC80_WIDTH * TIC80_HEIGHT * sizeof(png_rgba))};
+
+    if(img.data == NULL)
+        return strdup("failed to allocate screenshot buffer");
+
+    tic_mem* tic = console->tic;
+    for(s32 y = 0; y < TIC80_HEIGHT; y++)
+        for(s32 x = 0; x < TIC80_WIDTH; x++)
+            img.values[x + y * TIC80_WIDTH] =
+                tic->product.screen[(x + TIC80_MARGIN_LEFT) + (y + TIC80_MARGIN_TOP) * TIC80_FULLWIDTH];
+
+    png_buffer png = png_write(img, (png_buffer){NULL, 0});
+
+    free(img.data);
+
+    if(png.data == NULL || png.size <= 0)
+        return strdup("failed to encode screenshot");
+
+    bool saved = tic_fs_save(console->fs, out, png.data, png.size, true);
+    free(png.data);
+
+    if(!saved)
+        return strdup("failed to save screenshot");
+
+    const char* absolutePath = tic_fs_path(console->fs, out);
+    size_t size = strlen(out) + 48;
+
+    if(absolutePath)
+        size += strlen(absolutePath);
+
+    char* result = malloc(size);
+
+    if(result == NULL)
+        return strdup("screenshot saved");
+
+    if(absolutePath)
+        snprintf(result, size, "saved screenshot: %s (%s)", out, absolutePath);
+    else
+        snprintf(result, size, "saved screenshot: %s", out);
+
+    if(isError)
+        *isError = false;
+
+    return result;
+}
+
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 {
     if(isError)

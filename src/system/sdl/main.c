@@ -64,6 +64,9 @@ extern void gotoMenu(Studio* studio);
 
 #if defined(__TIC_WINDOWS__)
 #include <windows.h>
+#else
+#include <sys/select.h>
+#include <unistd.h>
 #endif
 
 #if defined(__TIC_ANDROID__) || defined(__SWITCH__)
@@ -259,6 +262,33 @@ static void freeMcpRequest(McpRequest* request)
     free(request->tokens);
 }
 
+static bool mcpWaitForStdin(u32 timeoutMs)
+{
+#if defined(__TIC_WINDOWS__)
+    HANDLE stdinHandle = GetStdHandle(STD_INPUT_HANDLE);
+    if(stdinHandle == NULL || stdinHandle == INVALID_HANDLE_VALUE)
+    {
+        SDL_Delay(timeoutMs);
+        return false;
+    }
+
+    return WaitForSingleObject(stdinHandle, timeoutMs) == WAIT_OBJECT_0;
+#else
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+
+    struct timeval timeout =
+    {
+        .tv_sec = timeoutMs / 1000,
+        .tv_usec = (timeoutMs % 1000) * 1000,
+    };
+
+    const s32 result = select(STDIN_FILENO + 1, &readfds, NULL, NULL, &timeout);
+    return result > 0 && FD_ISSET(STDIN_FILENO, &readfds);
+#endif
+}
+
 static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
 {
 #if defined(__TIC_LINUX__)
@@ -277,9 +307,30 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
     }
 
     char line[MCP_MAX_LINE];
+    const u32 frameMs = MAX(1000 / TIC80_FRAMERATE, 1);
+    u32 lastTick = SDL_GetTicks();
+    u32 accumulator = 0;
+    const tic80_input emptyInput = {0};
 
-    while(fgets(line, sizeof line, stdin))
+    while(true)
     {
+        u32 now = SDL_GetTicks();
+        accumulator += now - lastTick;
+        lastTick = now;
+
+        while(accumulator >= frameMs)
+        {
+            studio_tick(mcpStudio, emptyInput);
+            accumulator -= frameMs;
+        }
+
+        const u32 waitMs = accumulator < frameMs ? frameMs - accumulator : 0;
+        if(!mcpWaitForStdin(MIN(waitMs, 50)))
+            continue;
+
+        if(!fgets(line, sizeof line, stdin))
+            break;
+
         McpRequest request;
         if(!parseMcpRequest(line, &request))
         {
@@ -353,7 +404,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
         if(strcmp(method, "tools/list") == 0)
         {
             if(request.hasId)
-                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}}]}");
+                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}}]}");
 
             freeMcpRequest(&request);
             continue;
@@ -383,7 +434,10 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
                 continue;
             }
 
-            if(!mcpTokenEq(request.json, &request.tokens[name], "run_command"))
+            bool runCommand = mcpTokenEq(request.json, &request.tokens[name], "run_command");
+            bool captureScreenshot = mcpTokenEq(request.json, &request.tokens[name], "capture_screenshot");
+
+            if(!runCommand && !captureScreenshot)
             {
                 writeMcpResult(idJson, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
                 freeMcpRequest(&request);
@@ -391,23 +445,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
             }
 
             s32 arguments = mcpFindObjectValueToken(request.json, request.tokens, request.count, params, "arguments");
-            if(arguments < 0 || request.tokens[arguments].type != JSMN_OBJECT)
-            {
-                writeMcpError(idJson, -32602, "Invalid params");
-                freeMcpRequest(&request);
-                continue;
-            }
-
-            s32 command = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "command");
-            if(command < 0 || request.tokens[command].type != JSMN_STRING)
-            {
-                writeMcpError(idJson, -32602, "Invalid params");
-                freeMcpRequest(&request);
-                continue;
-            }
-
-            char commandText[1024];
-            if(!mcpCopyTokenString(request.json, &request.tokens[command], commandText, sizeof commandText))
+            if(arguments >= 0 && request.tokens[arguments].type != JSMN_OBJECT)
             {
                 writeMcpError(idJson, -32602, "Invalid params");
                 freeMcpRequest(&request);
@@ -415,7 +453,59 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
             }
 
             bool isError = false;
-            char* output = studio_run_command_mcp(mcpStudio, commandText, &isError);
+            char* output = NULL;
+
+            if(runCommand)
+            {
+                if(arguments < 0)
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                s32 command = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "command");
+                if(command < 0 || request.tokens[command].type != JSMN_STRING)
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                char commandText[1024];
+                if(!mcpCopyTokenString(request.json, &request.tokens[command], commandText, sizeof commandText))
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                output = studio_run_command_mcp(mcpStudio, commandText, &isError);
+            }
+            else
+            {
+                const char* screenshotPath = NULL;
+                char screenshotPathBuf[1024];
+
+                if(arguments >= 0)
+                {
+                    s32 path = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "path");
+                    if(path >= 0)
+                    {
+                        if(request.tokens[path].type != JSMN_STRING
+                            || !mcpCopyTokenString(request.json, &request.tokens[path], screenshotPathBuf, sizeof screenshotPathBuf))
+                        {
+                            writeMcpError(idJson, -32602, "Invalid params");
+                            freeMcpRequest(&request);
+                            continue;
+                        }
+
+                        screenshotPath = screenshotPathBuf;
+                    }
+                }
+
+                output = studio_capture_screenshot_mcp(mcpStudio, screenshotPath, &isError);
+            }
             char* escaped = mcpEscapeJsonString(output ? output : "");
 
             if(escaped == NULL)

@@ -2593,6 +2593,19 @@ char* studio_run_command_mcp(Studio* studio, const char* command, bool* isError)
     return strdup("mcp command runner unavailable");
 }
 
+char* studio_capture_screenshot_mcp(Studio* studio, const char* path, bool* isError)
+{
+#if defined(BUILD_EDITORS)
+    if(studio && studio->console)
+        return consoleCaptureScreenshotMcp(studio->console, path, isError);
+#endif
+
+    if(isError)
+        *isError = true;
+
+    return strdup("mcp screenshot capture unavailable");
+}
+
 void exitGame(Studio* studio)
 {
     if(studio->prevMode == TIC_SURF_MODE)
