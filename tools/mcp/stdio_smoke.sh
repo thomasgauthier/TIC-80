@@ -57,6 +57,8 @@ fi
 grep -q '"jsonrpc":"2.0"' "$OUT"
 grep -q '"id":1' "$OUT"
 grep -q '"protocolVersion":"2025-03-26"' "$OUT"
+grep '"id":1' "$OUT" | grep -q '"serverInfo":{'
+grep '"id":1' "$OUT" | grep -q '"name":"TIC-80"'
 grep -q '"id":2' "$OUT"
 grep -q '"name":"run_command"' "$OUT"
 grep -q '"name":"capture_screenshot"' "$OUT"

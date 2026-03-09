@@ -389,7 +389,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
         if(strcmp(method, "initialize") == 0)
         {
             if(request.hasId)
-                writeMcpResult(idJson, "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}}}");
+                writeMcpResult(idJson, "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"" TIC_NAME "\",\"version\":\"" TIC_VERSION "\"}}");
 
             freeMcpRequest(&request);
             continue;

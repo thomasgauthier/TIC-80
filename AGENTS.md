@@ -16,10 +16,10 @@ bd sync               # Sync with git
 
 **ALWAYS** run CMake exactly like [`we_build_it_for_headless.md`](we_build_it_for_headless.md).
 
-When configuring/building in this repo, use this flow from `build/`:
+When configuring/building in this repo, use this mandatory flow from `build/`:
 
 ```bash
-cmake -DBUILD_WITH_ALL=On ..
+cmake -DBUILD_WITH_ALL=On -DBUILD_PRO=On ..
 cmake --build . --parallel
 ```
 
