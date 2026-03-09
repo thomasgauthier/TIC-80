@@ -24,6 +24,7 @@
 
 #include "studio/studio.h"
 #include "studio/fs.h"
+#include <stdio.h>
 
 typedef enum
 {
@@ -112,8 +113,11 @@ struct Console
     void(*done)(Console*);
 
     CartSaveResult(*save)(Console*);
+
+    FILE* output;
 };
 
 void initConsole(Console*, Studio* studio, struct tic_fs* fs, struct tic_net* net, struct Config* config, StartArgs args);
 void freeConsole(Console* console);
 void forceAutoSave(Console* console, const char* cart_name);
+char* consoleRunCommandMcp(Console* console, const char* command, bool* isError);

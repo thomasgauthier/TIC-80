@@ -1,0 +1,7 @@
+
+
+usage: help [<text>|version|welcome|spec|ram|vram|commands|api|keys|buttons|startup|hotkeys|terms|license]
+
+type help commands to show commands
+
+press ESC to switch editor/console

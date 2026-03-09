@@ -2580,6 +2580,19 @@ void studio_load(Studio* studio, const char* file)
 #endif
 }
 
+char* studio_run_command_mcp(Studio* studio, const char* command, bool* isError)
+{
+#if defined(BUILD_EDITORS)
+    if(studio && studio->console)
+        return consoleRunCommandMcp(studio->console, command, isError);
+#endif
+
+    if(isError)
+        *isError = true;
+
+    return strdup("mcp command runner unavailable");
+}
+
 void exitGame(Studio* studio)
 {
     if(studio->prevMode == TIC_SURF_MODE)

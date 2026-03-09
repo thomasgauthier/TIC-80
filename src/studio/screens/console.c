@@ -493,6 +493,9 @@ static bool iswrap(char sym)
 
 static FILE* getOutputStream(Console* console)
 {
+    if(console->output)
+        return console->output;
+
     return console->args.mcp ? stderr : stdout;
 }
 
@@ -3912,6 +3915,87 @@ static void processCommand(Console* console, const char* text)
         }
     }
     else commandDone(console);
+}
+
+char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
+{
+    if(isError)
+        *isError = true;
+
+    if(command == NULL || *command == '\0')
+        return strdup("empty command");
+
+    if(console == NULL || console->desc == NULL)
+        return strdup("mcp console not initialized");
+
+    char commandName[TICNAME_MAX] = {0};
+    bool commandKnown = false;
+
+    char* cmd = strdup(command);
+    if(cmd)
+    {
+        char* token = strtok(cmd, " ");
+        if(token)
+        {
+            FOR(const Command*, item, Commands)
+                if(casecmp(token, item->name) == 0 || (item->alt && casecmp(token, item->alt) == 0))
+                {
+                    commandKnown = true;
+                    snprintf(commandName, sizeof commandName, "%s", item->name);
+                    break;
+                }
+
+            else snprintf(commandName, sizeof commandName, "%s", token);
+        }
+
+        free(cmd);
+    }
+
+    if(!commandKnown)
+    {
+        const size_t size = strlen(commandName) + 32;
+        char* text = calloc(1, size);
+
+        if(text == NULL)
+            return strdup("unknown command");
+
+        sprintf(text, "unknown command: %s", commandName);
+        return text;
+    }
+
+    FILE* stream = tmpfile();
+
+    if(stream == NULL)
+    {
+        return strdup("failed to capture command output");
+    }
+
+    FILE* previousOutput = console->output;
+    console->output = stream;
+    processCommand(console, command);
+    fflush(stream);
+    fseek(stream, 0, SEEK_END);
+    long streamSize = ftell(stream);
+    rewind(stream);
+
+    char* streamData = NULL;
+    if(streamSize >= 0)
+    {
+        streamData = calloc(1, (size_t)streamSize + 1);
+        if(streamData)
+            fread(streamData, 1, (size_t)streamSize, stream);
+    }
+
+    fclose(stream);
+    console->output = previousOutput;
+
+    if(streamData == NULL)
+        streamData = strdup("");
+
+    if(isError)
+        *isError = strstr(streamData, "unknown command:") != NULL;
+
+    return streamData;
 }
 
 static void fillHistory(Console* console)

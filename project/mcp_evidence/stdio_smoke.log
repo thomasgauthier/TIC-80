@@ -1,0 +1,3 @@
+MCP stdio smoke test passed.
+stdout: /tmp/tmp.DrDlZKoMo4/out.jsonl
+stderr: /tmp/tmp.DrDlZKoMo4/err.log

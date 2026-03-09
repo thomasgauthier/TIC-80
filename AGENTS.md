@@ -12,6 +12,36 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Headless Build Rule (MANDATORY)
+
+**ALWAYS** run CMake exactly like [`we_build_it_for_headless.md`](we_build_it_for_headless.md).
+
+When configuring/building in this repo, use this flow from `build/`:
+
+```bash
+cmake -DBUILD_WITH_ALL=On ..
+cmake --build . --parallel
+```
+
+Headless-safe expectations are mandatory:
+- Never enable SDLGPU/OpenGL path (do not pass `-DBUILD_SDLGPU=On` unless user explicitly asks).
+- Do not add alternative graphics/window-system flags unless user explicitly asks.
+- Do not use alternative build invocations unless the user explicitly asks.
+
+## Headless Run Rule (MANDATORY)
+
+After building for headless validation, run TIC-80 via Xvfb exactly as documented:
+
+```bash
+xvfb-run --auto-servernum ./bin/tic80 --skip
+```
+
+If additional runtime behavior is needed, only use documented headless-safe options:
+- `--soft` (force software rendering)
+- `--cli` (console-only output)
+
+Do not run GUI-dependent launch commands directly in headless validation flows unless the user explicitly asks.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.

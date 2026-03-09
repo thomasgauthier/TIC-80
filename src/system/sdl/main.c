@@ -30,6 +30,9 @@
 #include <time.h>
 #include <ctype.h>
 
+#define JSMN_PARENT_LINKS
+#include "../../../vendor/jsmn/jsmn.h"
+
 #ifdef __SWITCH__
 // from studio/studio.h
 extern void gotoMenu(Studio* studio);
@@ -87,46 +90,176 @@ static bool hasArg(s32 argc, char** argv, const char* arg)
     return false;
 }
 
-static bool findMethod(const char* line, const char* method)
-{
-    char pattern[96];
-    snprintf(pattern, sizeof pattern, "\"method\":\"%s\"", method);
-    if(strstr(line, pattern)) return true;
+#define MCP_MAX_LINE 8192
 
-    snprintf(pattern, sizeof pattern, "\"method\": \"%s\"", method);
-    return strstr(line, pattern) != NULL;
+typedef struct
+{
+    bool parsed;
+    bool hasId;
+    bool idTypeValid;
+    bool methodTypeValid;
+    bool hasJsonRpc;
+    bool jsonRpcTypeValid;
+    bool isJsonRpc2;
+    const char* json;
+    s32 count;
+    jsmntok_t* tokens;
+    s32 idToken;
+    s32 methodToken;
+} McpRequest;
+
+static bool mcpTokenEq(const char* json, const jsmntok_t* tok, const char* value)
+{
+    s32 len = (s32)strlen(value);
+    return tok->type == JSMN_STRING
+        && tok->end - tok->start == len
+        && strncmp(json + tok->start, value, len) == 0;
 }
 
-static bool readId(const char* line, s32* id)
+static bool mcpCopyTokenRaw(const char* json, const jsmntok_t* tok, char* dst, size_t size)
 {
-    const char* ptr = strstr(line, "\"id\"");
-    if(!ptr) return false;
+    s32 len = tok->end - tok->start;
+    if(len <= 0 || (size_t)len >= size)
+        return false;
 
-    ptr = strchr(ptr, ':');
-    if(!ptr) return false;
-    ptr++;
-
-    while(*ptr && isspace((unsigned char)*ptr)) ptr++;
-
-    if(!isdigit((unsigned char)*ptr) && *ptr != '-') return false;
-
-    *id = (s32)strtol(ptr, NULL, 10);
+    memcpy(dst, json + tok->start, len);
+    dst[len] = '\0';
     return true;
 }
 
-static void writeMcpResult(s32 id, const char* resultJson)
+static bool mcpCopyTokenString(const char* json, const jsmntok_t* tok, char* dst, size_t size)
 {
-    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n", id, resultJson);
+    if(tok->type != JSMN_STRING)
+        return false;
+
+    return mcpCopyTokenRaw(json, tok, dst, size);
+}
+
+static s32 mcpFindObjectValueToken(const char* json, const jsmntok_t* tokens, s32 count, s32 objectIndex, const char* key)
+{
+    if(objectIndex < 0 || objectIndex >= count || tokens[objectIndex].type != JSMN_OBJECT)
+        return -1;
+
+    for(s32 i = objectIndex + 1; i + 1 < count; i++)
+        if(tokens[i].parent == objectIndex && mcpTokenEq(json, &tokens[i], key))
+            return i + 1;
+
+    return -1;
+}
+
+static void writeMcpResult(const char* idJson, const char* resultJson)
+{
+    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}\n", idJson, resultJson);
     fflush(stdout);
 }
 
-static void writeMcpError(s32 id, s32 code, const char* message)
+static void writeMcpError(const char* idJson, s32 code, const char* message)
 {
-    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{\"code\":%d,\"message\":\"%s\"}}\n", id, code, message);
+    fprintf(stdout, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":\"%s\"}}\n", idJson, code, message);
     fflush(stdout);
 }
 
-static s32 runMcpStdio()
+static char* mcpEscapeJsonString(const char* text)
+{
+    if(text == NULL)
+        return strdup("");
+
+    size_t len = strlen(text);
+    char* out = malloc(len * 6 + 1);
+
+    if(out == NULL)
+        return NULL;
+
+    char* ptr = out;
+    for(const unsigned char* it = (const unsigned char*)text; *it; it++)
+    {
+        switch(*it)
+        {
+            case '\"': *ptr++ = '\\'; *ptr++ = '\"'; break;
+            case '\\': *ptr++ = '\\'; *ptr++ = '\\'; break;
+            case '\b': *ptr++ = '\\'; *ptr++ = 'b'; break;
+            case '\f': *ptr++ = '\\'; *ptr++ = 'f'; break;
+            case '\n': *ptr++ = '\\'; *ptr++ = 'n'; break;
+            case '\r': *ptr++ = '\\'; *ptr++ = 'r'; break;
+            case '\t': *ptr++ = '\\'; *ptr++ = 't'; break;
+            default:
+                if(*it < 0x20)
+                    ptr += sprintf(ptr, "\\u%04x", *it);
+                else
+                    *ptr++ = (char)*it;
+                break;
+        }
+    }
+
+    *ptr = '\0';
+    return out;
+}
+
+static bool parseMcpRequest(const char* line, McpRequest* request)
+{
+    memset(request, 0, sizeof *request);
+    request->json = line;
+    request->idToken = -1;
+    request->methodToken = -1;
+
+    s32 tokenCapacity = 128;
+    request->tokens = malloc(tokenCapacity * sizeof *request->tokens);
+
+    if(request->tokens == NULL)
+        return false;
+
+    jsmn_parser parser;
+    jsmn_init(&parser);
+
+    const s32 size = (s32)strlen(line);
+
+    while((request->count = jsmn_parse(&parser, line, size, request->tokens, tokenCapacity)) == JSMN_ERROR_NOMEM)
+    {
+        tokenCapacity *= 2;
+        request->tokens = realloc(request->tokens, tokenCapacity * sizeof *request->tokens);
+
+        if(request->tokens == NULL)
+            return false;
+    }
+
+    if(request->count < 0)
+    {
+        request->parsed = false;
+        return true;
+    }
+
+    request->parsed = request->count > 0;
+    if(!request->parsed || request->tokens[0].type != JSMN_OBJECT)
+        return true;
+
+    request->hasJsonRpc = mcpFindObjectValueToken(line, request->tokens, request->count, 0, "jsonrpc") >= 0;
+    s32 jsonRpcToken = mcpFindObjectValueToken(line, request->tokens, request->count, 0, "jsonrpc");
+
+    if(jsonRpcToken >= 0)
+    {
+        request->jsonRpcTypeValid = request->tokens[jsonRpcToken].type == JSMN_STRING;
+        request->isJsonRpc2 = request->jsonRpcTypeValid && mcpTokenEq(line, &request->tokens[jsonRpcToken], "2.0");
+    }
+
+    request->idToken = mcpFindObjectValueToken(line, request->tokens, request->count, 0, "id");
+    request->hasId = request->idToken >= 0;
+
+    if(request->hasId)
+        request->idTypeValid = request->tokens[request->idToken].type == JSMN_PRIMITIVE || request->tokens[request->idToken].type == JSMN_STRING;
+
+    request->methodToken = mcpFindObjectValueToken(line, request->tokens, request->count, 0, "method");
+    if(request->methodToken >= 0)
+        request->methodTypeValid = request->tokens[request->methodToken].type == JSMN_STRING;
+
+    return true;
+}
+
+static void freeMcpRequest(McpRequest* request)
+{
+    free(request->tokens);
+}
+
+static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
 {
 #if defined(__TIC_LINUX__)
     signal(SIGPIPE, SIG_IGN);
@@ -136,45 +269,193 @@ static s32 runMcpStdio()
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
-    char line[8192];
+    Studio* mcpStudio = studio_create(argc, argv, TIC80_SAMPLERATE, SCREEN_FORMAT, folder, 4, tic_layout_qwerty);
+    if(mcpStudio == NULL)
+    {
+        fprintf(stderr, "failed to initialize studio for mcp mode\n");
+        return 1;
+    }
+
+    char line[MCP_MAX_LINE];
 
     while(fgets(line, sizeof line, stdin))
     {
-        s32 id = 0;
-        bool hasId = readId(line, &id);
-
-        if(findMethod(line, "initialize"))
+        McpRequest request;
+        if(!parseMcpRequest(line, &request))
         {
-            if(hasId)
-                writeMcpResult(id, "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}}}");
+            writeMcpError("null", -32700, "Parse error");
             continue;
         }
 
-        if(findMethod(line, "notifications/initialized"))
-            continue;
+        const char* idJson = "null";
+        char idBuf[128];
 
-        if(findMethod(line, "tools/list"))
+        if(!request.parsed)
         {
-            if(hasId)
-                writeMcpResult(id, "{\"tools\":[{\"name\":\"tic.echo\",\"description\":\"Echo placeholder tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"additionalProperties\":true}}]}");
+            writeMcpError("null", -32700, "Parse error");
+            freeMcpRequest(&request);
             continue;
         }
 
-        if(findMethod(line, "tools/call"))
+        if(request.hasId && request.idTypeValid && mcpCopyTokenRaw(request.json, &request.tokens[request.idToken], idBuf, sizeof idBuf))
+            idJson = idBuf;
+
+        if(request.tokens[0].type != JSMN_OBJECT || !request.hasJsonRpc || !request.jsonRpcTypeValid || !request.isJsonRpc2 || (request.hasId && !request.idTypeValid))
         {
-            if(!hasId) continue;
-
-            if(strstr(line, "\"name\":\"tic.echo\"") || strstr(line, "\"name\": \"tic.echo\""))
-                writeMcpResult(id, "{\"content\":[{\"type\":\"text\",\"text\":\"tic.echo: ok\"}],\"isError\":false}");
-            else
-                writeMcpResult(id, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
-
+            writeMcpError(idJson, -32600, "Invalid Request");
+            freeMcpRequest(&request);
             continue;
         }
 
-        if(hasId)
-            writeMcpError(id, -32601, "Method not found");
+        if(request.methodToken < 0)
+        {
+            if(request.hasId)
+                writeMcpError(idJson, -32600, "Invalid Request");
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(!request.methodTypeValid)
+        {
+            if(request.hasId)
+                writeMcpError(idJson, -32600, "Invalid Request");
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        char method[128];
+        if(!mcpCopyTokenString(request.json, &request.tokens[request.methodToken], method, sizeof method))
+        {
+            if(request.hasId)
+                writeMcpError(idJson, -32600, "Invalid Request");
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(strcmp(method, "initialize") == 0)
+        {
+            if(request.hasId)
+                writeMcpResult(idJson, "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{\"tools\":{}}}");
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(strcmp(method, "notifications/initialized") == 0)
+        {
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(strcmp(method, "tools/list") == 0)
+        {
+            if(request.hasId)
+                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}}]}");
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(strcmp(method, "tools/call") == 0)
+        {
+            if(!request.hasId)
+            {
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            s32 params = mcpFindObjectValueToken(request.json, request.tokens, request.count, 0, "params");
+            if(params < 0 || request.tokens[params].type != JSMN_OBJECT)
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            s32 name = mcpFindObjectValueToken(request.json, request.tokens, request.count, params, "name");
+            if(name < 0 || request.tokens[name].type != JSMN_STRING)
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            if(!mcpTokenEq(request.json, &request.tokens[name], "run_command"))
+            {
+                writeMcpResult(idJson, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            s32 arguments = mcpFindObjectValueToken(request.json, request.tokens, request.count, params, "arguments");
+            if(arguments < 0 || request.tokens[arguments].type != JSMN_OBJECT)
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            s32 command = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "command");
+            if(command < 0 || request.tokens[command].type != JSMN_STRING)
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            char commandText[1024];
+            if(!mcpCopyTokenString(request.json, &request.tokens[command], commandText, sizeof commandText))
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            bool isError = false;
+            char* output = studio_run_command_mcp(mcpStudio, commandText, &isError);
+            char* escaped = mcpEscapeJsonString(output ? output : "");
+
+            if(escaped == NULL)
+            {
+                free(output);
+                writeMcpError(idJson, -32000, "Internal error");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            const size_t resultSize = strlen(escaped) + 128;
+            char* result = malloc(resultSize);
+
+            if(result == NULL)
+            {
+                free(escaped);
+                free(output);
+                writeMcpError(idJson, -32000, "Internal error");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            snprintf(result, resultSize, "{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}],\"isError\":%s}", escaped, isError ? "true" : "false");
+            writeMcpResult(idJson, result);
+
+            free(result);
+            free(escaped);
+            free(output);
+
+            freeMcpRequest(&request);
+            continue;
+        }
+
+        if(request.hasId)
+            writeMcpError(idJson, -32601, "Method not found");
+
+        freeMcpRequest(&request);
     }
+
+    studio_delete(mcpStudio);
 
     return 0;
 }
@@ -2218,8 +2499,10 @@ static s32 emsStart(s32 argc, char **argv, const char* folder)
 
 s32 main(s32 argc, char **argv)
 {
+    const char* folder = getAppFolder();
+
     if(hasArg(argc, argv, "--mcp"))
-        return runMcpStdio();
+        return runMcpStdio(argc, argv, folder);
 
 #if defined(__TIC_WINDOWS__)
     {
@@ -2230,8 +2513,6 @@ s32 main(s32 argc, char **argv)
 #elif defined(__TIC_LINUX__)
     signal(SIGPIPE, SIG_IGN);
 #endif
-
-    const char* folder = getAppFolder();
 
 #if defined(__EMSCRIPTEN__)
 

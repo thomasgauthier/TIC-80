@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}}}}
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"run_command","description":"Run a TIC-80 console command.","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}}]}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"\nConsole commands:\nhelp exit edit new load save run resume eval dir cd mkdir folder export import del cls demo config surf menu "}],"isError":false}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"unknown command: not_a_real_command"}],"isError":true}}
+{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"unsupported command in mcp mode: folder"}],"isError":true}}
