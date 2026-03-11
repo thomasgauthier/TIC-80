@@ -38,7 +38,15 @@ static void onError(void* data, const char* info)
 {
 #if defined(BUILD_EDITORS)
     Run* run = (Run*)data;
-    setStudioMode(run->studio, TIC_CONSOLE_MODE);
+
+    if(run->console == NULL || !run->console->mcp.command.active)
+    {
+        if(run->console)
+            run->console->mcp.command.preservedScreenValid = false;
+
+        setStudioMode(run->studio, TIC_CONSOLE_MODE);
+    }
+
     run->console->error(run->console, info);
 #endif
 }

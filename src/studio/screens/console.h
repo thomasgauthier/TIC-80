@@ -101,6 +101,20 @@ struct Console
         char** items;
     } commands;
 
+    struct
+    {
+        struct
+        {
+            bool active;
+            bool errorOccurred;
+            bool preservedScreenValid;
+            EditorMode startMode;
+            tic_tick_data tickData;
+            tic_tick_data* previousTickData;
+            u32 preservedScreen[TIC80_FULLWIDTH * TIC80_FULLHEIGHT];
+        } command;
+    } mcp;
+
     CommandDesc* desc;
 
     void(*load)(Console*, const char* path);

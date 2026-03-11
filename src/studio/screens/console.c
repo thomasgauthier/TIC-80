@@ -23,6 +23,7 @@
 #include "console.h"
 #include "start.h"
 #include "tools.h"
+#include "core/core.h"
 #include "studio/fs.h"
 #include "studio/net.h"
 #include "studio/config.h"
@@ -499,6 +500,47 @@ static FILE* getOutputStream(Console* console)
     return console->args.mcp ? stderr : stdout;
 }
 
+static u64 mcpCommandCounter(void* data)
+{
+    Console* console = (Console*)data;
+    tic_tick_data* previous = console->mcp.command.previousTickData;
+
+    return previous && previous->counter
+        ? previous->counter(previous->data)
+        : tic_sys_counter_get();
+}
+
+static u64 mcpCommandFreq(void* data)
+{
+    Console* console = (Console*)data;
+    tic_tick_data* previous = console->mcp.command.previousTickData;
+
+    return previous && previous->freq
+        ? previous->freq(previous->data)
+        : tic_sys_freq_get();
+}
+
+static void mcpCommandError(void* data, const char* info)
+{
+    Console* console = (Console*)data;
+    console->error(console, info);
+}
+
+static void mcpCommandTrace(void* data, const char* text, u8 color)
+{
+    Console* console = (Console*)data;
+    console->trace(console, text, color);
+}
+
+static void mcpCommandExit(void* data)
+{
+    Console* console = (Console*)data;
+    tic_tick_data* previous = console->mcp.command.previousTickData;
+
+    if(previous && previous->exit)
+        previous->exit(previous->data);
+}
+
 static void consolePrintOffset(Console* console, const char* text, u8 color, s32 wrapLineOffset)
 {
 #ifndef BAREMETALPI
@@ -569,6 +611,9 @@ static void printLink(Console* console, const char* text)
 
 static void printError(Console* console, const char* text)
 {
+    if(console->mcp.command.active)
+        console->mcp.command.errorOccurred = true;
+
     consolePrint(console, text, CONSOLE_ERROR_TEXT_COLOR);
 }
 
@@ -981,7 +1026,6 @@ static void onLoadCommandConfirmed(Console* console)
         const char* param = console->desc->params->key;
         const char* name = getCartName(param);
         const char* section = console->desc->count > 1 ? console->desc->params[1].key : NULL;
-
         if(section)
         {
             static const char* Sections[] =
@@ -1061,7 +1105,6 @@ static void onLoadCommandConfirmed(Console* console)
                 if(project_ext(name))
                 {
                     void* data = tic_fs_load(console->fs, name, &size);
-
                     if(data) SCOPE(free(data))
                     {
                         tic_cartridge* cart = newCart();
@@ -1194,6 +1237,7 @@ static void onLoadCommand(Console* console)
     {
         onLoadCommandConfirmed(console);
     }
+
 }
 
 static void loadDemo(Console* console, const tic_script* script)
@@ -2709,12 +2753,25 @@ static void onEvalCommand(Console* console)
     printLine(console);
 
     const tic_script* script_config = tic_get_script(console->tic);
-
+    tic_core* core = (tic_core*)console->tic;
     if (script_config->eval)
     {
         if(console->desc->count)
-            script_config->eval(console->tic,
-                                console->desc->src+strlen(console->desc->command));
+        {
+            if(console->mcp.command.active
+                && getStudioMode(console->studio) == TIC_RUN_MODE
+                && core
+                && !core->state.initialized)
+                studio_tick(console->studio, (tic80_input){0});
+
+            if(core && !core->state.initialized)
+                printError(console, "runtime not initialized");
+            else
+            {
+                script_config->eval(console->tic,
+                                    console->desc->src+strlen(console->desc->command));
+            }
+        }
         else printError(console, "nothing to eval");
     }
     else
@@ -3946,10 +4003,14 @@ char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isEr
         return strdup("failed to allocate screenshot buffer");
 
     tic_mem* tic = console->tic;
+    const u32* sourceScreen = console->mcp.command.preservedScreenValid
+        ? console->mcp.command.preservedScreen
+        : tic->product.screen;
+
     for(s32 y = 0; y < TIC80_HEIGHT; y++)
         for(s32 x = 0; x < TIC80_WIDTH; x++)
             img.values[x + y * TIC80_WIDTH] =
-                tic->product.screen[(x + TIC80_MARGIN_LEFT) + (y + TIC80_MARGIN_TOP) * TIC80_FULLWIDTH];
+                sourceScreen[(x + TIC80_MARGIN_LEFT) + (y + TIC80_MARGIN_TOP) * TIC80_FULLWIDTH];
 
     png_buffer png = png_write(img, (png_buffer){NULL, 0});
 
@@ -4040,8 +4101,29 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     }
 
     FILE* previousOutput = console->output;
+    bool previousMcpCommandActive = console->mcp.command.active;
+    bool previousMcpCommandError = console->mcp.command.errorOccurred;
+    tic_core* core = (tic_core*)console->tic;
+    console->mcp.command.startMode = getStudioMode(console->studio);
+    bool preserveRunScreen = console->mcp.command.startMode == TIC_RUN_MODE && console->tic != NULL;
+
     console->output = stream;
+    console->mcp.command.active = true;
+    console->mcp.command.errorOccurred = false;
+    console->mcp.command.previousTickData = core ? core->data : NULL;
+    if(core)
+        core->data = &console->mcp.command.tickData;
+
+    if(preserveRunScreen)
+    {
+        memcpy(console->mcp.command.preservedScreen,
+            console->tic->product.screen,
+            sizeof console->mcp.command.preservedScreen);
+        console->mcp.command.preservedScreenValid = true;
+    }
+
     processCommand(console, command);
+
     fflush(stream);
     fseek(stream, 0, SEEK_END);
     long streamSize = ftell(stream);
@@ -4058,11 +4140,37 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     fclose(stream);
     console->output = previousOutput;
 
+    if(core)
+        core->data = console->mcp.command.previousTickData;
+
+    console->mcp.command.previousTickData = NULL;
+
     if(streamData == NULL)
         streamData = strdup("");
 
+    bool commandErrorOccurred = console->mcp.command.errorOccurred;
+
+    if(commandErrorOccurred && getStudioMode(console->studio) != console->mcp.command.startMode)
+        setStudioMode(console->studio, console->mcp.command.startMode);
+
+    if(commandErrorOccurred
+        && console->mcp.command.preservedScreenValid
+        && console->mcp.command.startMode == TIC_RUN_MODE
+        && getStudioMode(console->studio) == TIC_RUN_MODE)
+        memcpy(console->tic->product.screen,
+            console->mcp.command.preservedScreen,
+            sizeof console->mcp.command.preservedScreen);
+
     if(isError)
-        *isError = strstr(streamData, "unknown command:") != NULL;
+        *isError = commandErrorOccurred;
+
+    console->mcp.command.active = previousMcpCommandActive;
+    console->mcp.command.errorOccurred = previousMcpCommandError || commandErrorOccurred;
+
+    if(!(commandErrorOccurred
+        && console->mcp.command.startMode == TIC_RUN_MODE
+        && getStudioMode(console->studio) == TIC_RUN_MODE))
+        console->mcp.command.preservedScreenValid = false;
 
     return streamData;
 }
@@ -4129,6 +4237,9 @@ static void processConsoleCommand(Console* console)
 
 static void error(Console* console, const char* info)
 {
+    if(console->mcp.command.active)
+        console->mcp.command.errorOccurred = true;
+
     consolePrint(console, info ? info : "unknown error", CONSOLE_ERROR_TEXT_COLOR);
     commandDone(console);
 }
@@ -4577,7 +4688,6 @@ static inline bool isslash(char c)
 static bool cmdLoadCart(Console* console, const char* path)
 {
     bool done = false;
-
     s32 size = 0;
     void* data = fs_read(path, &size);
 
@@ -4688,6 +4798,16 @@ void initConsole(Console* console, Studio* studio, tic_fs* fs, tic_net* net, Con
         .net = net,
         .args = args,
         .desc = console->desc,
+    };
+
+    console->mcp.command.tickData = (tic_tick_data)
+    {
+        .error = mcpCommandError,
+        .trace = mcpCommandTrace,
+        .exit = mcpCommandExit,
+        .data = console,
+        .counter = mcpCommandCounter,
+        .freq = mcpCommandFreq,
     };
 
     // parse --cmd param

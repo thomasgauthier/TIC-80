@@ -16,6 +16,7 @@ Source spec: `project/mcp_feature.md`
 - Evidence: `project/mcp_evidence/transcript_out.jsonl`
 - Success: `tools/call` with `run_command` and `help commands` returns `isError:false` and textual command output.
 - Failure: `tools/call` with invalid command returns `isError:true` and `unknown command` text.
+- MCP-triggered command/runtime error: `tools/call` with `run_command` and `eval error("mcp eval boom")` returns `isError:true`, and a later screenshot remains on the prior active view.
 - Unsupported: `tools/call` with `run_command` and `folder` returns `isError:true` and an MCP-safe unsupported-command error.
 <!-- Historical note: this `folder` expectation reflects an earlier spec revision and is kept for archival context. -->
 <!-- Current spec direction is console-command parity via MCP. -->
@@ -36,3 +37,9 @@ Source spec: `project/mcp_feature.md`
 - Test script: `tools/mcp/stdio_smoke.sh`
 - Includes success and failure checks for `run_command`.
 - Smoke run log: `project/mcp_evidence/stdio_smoke.log`
+- Regression script: `tools/mcp/error_mode_regression.sh`
+- Regression checks:
+  - Uses `tools/mcp/fixtures/mcp_error_mode.lua` as a stable startup-loaded Lua fixture with explicit cart data sections.
+  - Warms the cart into a stable run frame before comparing screenshots.
+  - MCP-triggered `eval` error keeps the captured framebuffer stable across screenshots.
+  - A delayed spontaneous runtime error changes the later captured framebuffer, matching normal TIC-80 behavior.

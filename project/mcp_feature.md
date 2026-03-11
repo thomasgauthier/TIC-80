@@ -37,6 +37,7 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Executes the command exactly as if entered in the TIC-80 fantasy editor console command line.
   - Returns command output text in MCP content format.
   - If execution fails, returns `isError: true` with useful error text.
+  - If a command-triggered script/runtime error happens synchronously during the `run_command` tool call in `--mcp` mode, the error is returned in MCP output and logged to console history without forcing the visible studio mode away from the currently active view.
 
 ### Tool Name: `capture_screenshot`
 - Input schema:
@@ -77,11 +78,13 @@ Feature is **PASSED** only when all items below are true:
 3. Tool execution passes:
    - `tools/call` for `run_command` executes a valid TIC-80 command and returns output.
    - Invalid command returns structured error (`isError: true`).
+   - MCP-triggered command/runtime errors (for example `eval error("boom")`) return structured error (`isError: true`) without forcing subsequent screenshots away from the previously active view.
    - `tools/call` for `capture_screenshot` saves PNG output and returns saved path text (`isError: false`).
    - `capture_screenshot` without `path` writes deterministic default path `mcp_capture.png`.
    - Console parity holds: commands available in the fantasy editor console are callable via MCP with equivalent behavior.
 4. Wall-clock progression passes:
    - `run_command` can enter run mode, then after ~5s idle wait, `capture_screenshot` captures an advanced frame.
+   - Spontaneous cart/runtime errors that happen after an MCP tool call has already returned still follow normal TIC-80 behavior and become visible in subsequent screenshots.
 4. Stdout purity passes:
    - During MCP session, `stdout` contains only JSON-RPC lines.
    - No banner/debug/progress/human text appears on `stdout`.
@@ -95,8 +98,12 @@ Feature is **PASSED** only when all items below are true:
 ## Required Test Evidence
 - Automated smoke script succeeds against built binary:
   - `tools/mcp/stdio_smoke.sh ./build/bin/tic80`
+- Automated regression script succeeds against built binary:
+  - `tools/mcp/error_mode_regression.sh ./build/bin/tic80`
 - Test must include `run_command("run")`, a 5-second wait, and `capture_screenshot` with artifact validation.
 - Add/extend coverage for `run_command` success/failure and `capture_screenshot` success.
+- Add/extend automated coverage for MCP-triggered command errors using a stable Lua text-project fixture with explicit cart data sections.
+- Add/extend automated coverage for spontaneous cart/runtime errors using the same stable fixture and verify that a later screenshot changes after the delayed cart error.
 - Provide one recorded transcript (request/response) proving:
   - init -> list -> call flow for both tools,
   - stdout purity,
