@@ -17,6 +17,7 @@ Source spec: `project/mcp_feature.md`
 - Success: `tools/call` with `run_command` and `help commands` returns `isError:false` and textual command output.
 - Failure: `tools/call` with invalid command returns `isError:true` and `unknown command` text.
 - MCP-triggered command/runtime error: `tools/call` with `run_command` and `eval error("mcp eval boom")` returns `isError:true`, and a later screenshot remains on the prior active view.
+- Screenshot path contract: `tools/call` with `capture_screenshot` and an absolute host path returns `isError:true` with a relative-path contract error.
 - Unsupported: `tools/call` with `run_command` and `folder` returns `isError:true` and an MCP-safe unsupported-command error.
 <!-- Historical note: this `folder` expectation reflects an earlier spec revision and is kept for archival context. -->
 <!-- Current spec direction is console-command parity via MCP. -->

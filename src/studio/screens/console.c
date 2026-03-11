@@ -3974,6 +3974,45 @@ static void processCommand(Console* console, const char* text)
     else commandDone(console);
 }
 
+static bool isMcpScreenshotAbsolutePath(const char* path)
+{
+    if(path == NULL || *path == '\0')
+        return false;
+
+    if(path[0] == '/' || path[0] == '\\')
+        return true;
+
+    return isalpha((unsigned char)path[0])
+        && path[1] == ':'
+        && (path[2] == '/' || path[2] == '\\');
+}
+
+static bool isMcpScreenshotEscapingPath(const char* path)
+{
+    if(path == NULL || *path == '\0')
+        return false;
+
+    const char* ptr = path;
+
+    while(*ptr)
+    {
+        while(*ptr == '/' || *ptr == '\\')
+            ptr++;
+
+        const char* segment = ptr;
+
+        while(*ptr && *ptr != '/' && *ptr != '\\')
+            ptr++;
+
+        const size_t size = ptr - segment;
+
+        if(size == 2 && strncmp(segment, "..", 2) == 0)
+            return true;
+    }
+
+    return false;
+}
+
 char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError)
 {
     if(isError)
@@ -3985,6 +4024,9 @@ char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isEr
     const char* requested = path && *path ? path : "mcp_capture.png";
     char filename[TICNAME_MAX];
     const char* out = requested;
+
+    if(path && *path && (isMcpScreenshotAbsolutePath(requested) || isMcpScreenshotEscapingPath(requested)))
+        return strdup("path must be relative to the TIC filesystem root");
 
     if(!tic_tool_has_ext(requested, PngExt))
     {

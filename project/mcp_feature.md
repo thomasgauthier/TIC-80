@@ -46,7 +46,9 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Captures the current runtime framebuffer (`tic->product.screen`) and encodes it to PNG.
   - Saves the screenshot through TIC filesystem APIs.
   - If `path` is omitted, defaults to deterministic filename `mcp_capture.png`.
+  - If `path` is provided, it must be relative to the active TIC filesystem root.
   - If `path` has no `.png` extension, `.png` is appended.
+  - Absolute host paths and escaping paths are rejected with `isError: true`.
   - Returns MCP text content describing saved relative path and resolved absolute path.
   - Returns `isError: true` with useful text when capture/encode/save fails.
 
@@ -81,6 +83,7 @@ Feature is **PASSED** only when all items below are true:
    - MCP-triggered command/runtime errors (for example `eval error("boom")`) return structured error (`isError: true`) without forcing subsequent screenshots away from the previously active view.
    - `tools/call` for `capture_screenshot` saves PNG output and returns saved path text (`isError: false`).
    - `capture_screenshot` without `path` writes deterministic default path `mcp_capture.png`.
+   - `capture_screenshot` rejects absolute or escaping paths with structured error (`isError: true`).
    - Console parity holds: commands available in the fantasy editor console are callable via MCP with equivalent behavior.
 4. Wall-clock progression passes:
    - `run_command` can enter run mode, then after ~5s idle wait, `capture_screenshot` captures an advanced frame.

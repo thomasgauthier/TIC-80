@@ -404,7 +404,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
         if(strcmp(method, "tools/list") == 0)
         {
             if(request.hasId)
-                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}}]}");
+                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG. If provided, path will be interpreted relative to the active TIC filesystem root (`./`); omit it to use mcp_capture.png.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}}]}");
 
             freeMcpRequest(&request);
             continue;
