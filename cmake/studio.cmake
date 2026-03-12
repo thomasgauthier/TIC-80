@@ -50,6 +50,10 @@ target_include_directories(tic80studio
 
 target_link_libraries(tic80studio PUBLIC tic80core PRIVATE zip wave_writer argparse giflib png)
 
+if(BUILD_WITH_LUA)
+    target_link_libraries(tic80studio PRIVATE luaapi)
+endif()
+
 if(USE_NAETT)
     target_compile_definitions(tic80studio PRIVATE USE_NAETT)
     target_link_libraries(tic80studio PRIVATE naett)

@@ -11,6 +11,8 @@ Source spec: `project/mcp_feature.md`
 ## 2. Tool discovery
 - Evidence: `project/mcp_evidence/transcript_out.jsonl`
 - `tools/list` includes `run_command` with `command` string schema.
+- `tools/list` includes `capture_screenshot` with relative-path screenshot contract.
+- `tools/list` includes `run_playtest_episode` with `script`, `timeout_seconds`, and `input_overlay` arguments.
 
 ## 3. Tool execution
 - Evidence: `project/mcp_evidence/transcript_out.jsonl`
@@ -38,9 +40,18 @@ Source spec: `project/mcp_feature.md`
 - Test script: `tools/mcp/stdio_smoke.sh`
 - Includes success and failure checks for `run_command`.
 - Smoke run log: `project/mcp_evidence/stdio_smoke.log`
+- Playtest smoke script: `tools/mcp/playtest_episode_smoke.sh`
+- Playtest regression script: `tools/mcp/playtest_episode_regression.sh`
 - Regression script: `tools/mcp/error_mode_regression.sh`
 - Regression checks:
   - Uses `tools/mcp/fixtures/mcp_error_mode.lua` as a stable startup-loaded Lua fixture with explicit cart data sections.
   - Warms the cart into a stable run frame before comparing screenshots.
   - MCP-triggered `eval` error keeps the captured framebuffer stable across screenshots.
   - A delayed spontaneous runtime error changes the later captured framebuffer, matching normal TIC-80 behavior.
+- Playtest episode checks:
+  - Uses `tools/mcp/fixtures/playtest_episode.lua` as a deterministic startup-loaded Lua fixture.
+  - Verifies `run_playtest_episode` can execute a one-frame script and create `script.lua`, `log.txt`, `console.txt`, and `screenshots/000001.png`.
+  - Verifies one-frame injected input changes the captured frame as expected.
+  - Verifies overlay-enabled episode screenshots differ from overlay-disabled screenshots.
+  - Verifies cart `trace(...)` output is recorded in `console.txt`.
+  - Verifies only the latest three `./playtest/episode_n` artifact directories are retained.

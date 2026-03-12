@@ -172,6 +172,9 @@ void studio_delete(Studio* studio);
 const StudioConfig* studio_config(Studio* studio);
 char* studio_run_command_mcp(Studio* studio, const char* command, bool* isError);
 char* studio_capture_screenshot_mcp(Studio* studio, const char* path, bool* isError);
+char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError);
+bool studio_playtest_set_gamepad(Studio* studio, s32 player, tic80_gamepad gamepad);
+bool studio_playtest_frame_advance(Studio* studio);
 
 Studio* studio_create(s32 argc, char **argv, s32 samplerate, tic80_pixel_color_format format, const char* appFolder, s32 maxscale, tic_layout keyboardLayout);
 

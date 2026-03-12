@@ -39,13 +39,26 @@
 #endif
 
 #include <ctype.h>
+#include <errno.h>
+#include <dirent.h>
 #include <string.h>
+#include "../../../vendor/lua/lua.h"
+#include "../../../vendor/lua/lauxlib.h"
+#include "../../../vendor/lua/lualib.h"
 
 #if !defined(__TIC_MACOSX__)
 #include <malloc.h>
 #endif
 
 #include <sys/stat.h>
+
+#if defined(__TIC_WINDOWS__)
+#include <direct.h>
+#define playtest_rmdir _rmdir
+#else
+#include <unistd.h>
+#define playtest_rmdir rmdir
+#endif
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -3974,6 +3987,545 @@ static void processCommand(Console* console, const char* text)
     else commandDone(console);
 }
 
+typedef struct
+{
+    lua_State* lua;
+    Console* console;
+    u64 deadline;
+} McpPlaytestRuntime;
+
+static const char PlaytestEndedSignal[] = "__tic80_playtest_episode_ended__";
+static const char PlaytestTimeoutSentinel[] = "__tic80_playtest_episode_timeout__";
+static const char PlaytestRuntimeRegistryKey = 0;
+
+static void closePlaytestFiles(Console* console)
+{
+    if(console->mcp.playtest.logFile)
+    {
+        fclose(console->mcp.playtest.logFile);
+        console->mcp.playtest.logFile = NULL;
+    }
+
+    if(console->mcp.playtest.consoleFile)
+    {
+        fclose(console->mcp.playtest.consoleFile);
+        console->mcp.playtest.consoleFile = NULL;
+    }
+}
+
+static void resetPlaytestState(Console* console)
+{
+    if(console->mcp.playtest.runtime)
+    {
+        McpPlaytestRuntime* runtime = console->mcp.playtest.runtime;
+        if(runtime->lua)
+            lua_close(runtime->lua);
+        free(runtime);
+        console->mcp.playtest.runtime = NULL;
+    }
+
+    closePlaytestFiles(console);
+
+    console->mcp.playtest.active = false;
+    console->mcp.playtest.finished = false;
+    console->mcp.playtest.timedOut = false;
+    console->mcp.playtest.frameCount = 0;
+    console->mcp.playtest.pendingMask = 0;
+    console->mcp.playtest.pendingGamepads.data = 0;
+    console->mcp.playtest.lastFrameGamepads.data = 0;
+    console->mcp.playtest.artifactDir[0] = '\0';
+    console->mcp.playtest.screenshotsDir[0] = '\0';
+    console->mcp.playtest.scriptPath[0] = '\0';
+    console->mcp.playtest.logPath[0] = '\0';
+    console->mcp.playtest.consolePath[0] = '\0';
+    console->mcp.playtest.status[0] = '\0';
+    console->mcp.playtest.message[0] = '\0';
+}
+
+static void copyPlaytestString(char* dst, size_t size, const char* src)
+{
+    if(size == 0)
+        return;
+
+    snprintf(dst, size, "%s", src ? src : "");
+}
+
+static void playtestSetResult(Console* console, const char* status, const char* message)
+{
+    copyPlaytestString(console->mcp.playtest.status, sizeof console->mcp.playtest.status, status);
+    copyPlaytestString(console->mcp.playtest.message, sizeof console->mcp.playtest.message, message);
+}
+
+static bool ensurePlaytestDir(tic_fs* fs, const char* path)
+{
+    if(path == NULL || *path == '\0')
+        return false;
+
+    if(tic_fs_exists(fs, path))
+        return true;
+
+    return tic_fs_makedir(fs, path) == 0 || tic_fs_exists(fs, path);
+}
+
+static bool ensurePlaytestDirTree(tic_fs* fs, const char* path)
+{
+    char partial[TICNAME_MAX] = {0};
+    const char* ptr = path;
+
+    while(*ptr)
+    {
+        while(*ptr == '/' || *ptr == '\\')
+            ptr++;
+
+        if(*ptr == '\0')
+            break;
+
+        const char* start = ptr;
+        while(*ptr && *ptr != '/' && *ptr != '\\')
+            ptr++;
+
+        size_t segLen = (size_t)(ptr - start);
+        size_t curLen = strlen(partial);
+
+        if(curLen && curLen + 1 < sizeof partial)
+            strcat(partial, "/");
+
+        if(curLen + segLen + 2 >= sizeof partial)
+            return false;
+
+        strncat(partial, start, segLen);
+
+        if(!ensurePlaytestDir(fs, partial))
+            return false;
+    }
+
+    return true;
+}
+
+static bool removePlaytestPathRecursive(const char* path)
+{
+    if(path == NULL || *path == '\0' || !fs_exists(path))
+        return true;
+
+    if(!fs_isdir(path))
+        return remove(path) == 0 || errno == ENOENT;
+
+    DIR* dir = opendir(path);
+    if(dir == NULL)
+        return false;
+
+    struct dirent* entry = NULL;
+    bool ok = true;
+
+    while((entry = readdir(dir)))
+    {
+        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+
+        char child[TICNAME_MAX * 2];
+        snprintf(child, sizeof child, "%s/%s", path, entry->d_name);
+
+        if(!removePlaytestPathRecursive(child))
+            ok = false;
+    }
+
+    closedir(dir);
+
+    if(playtest_rmdir(path) != 0 && errno != ENOENT)
+        ok = false;
+
+    return ok;
+}
+
+static bool resetPlaytestEpisodeSlot(Console* console, u32 episodeId)
+{
+    char dir[TICNAME_MAX];
+    snprintf(dir, sizeof dir, "playtest/episode_%u", episodeId);
+
+    const char* absolute = tic_fs_path(console->fs, dir);
+    if(absolute && fs_exists(absolute) && !removePlaytestPathRecursive(absolute))
+        return false;
+
+    return true;
+}
+
+static png_rgba playtestColor(u8 r, u8 g, u8 b, u8 a)
+{
+    return (png_rgba){.r = r, .g = g, .b = b, .a = a};
+}
+
+static void playtestSetPixel(png_img* img, s32 x, s32 y, png_rgba color)
+{
+    if(x < 0 || y < 0 || x >= img->width || y >= img->height)
+        return;
+
+    img->pixels[x + y * img->width] = color;
+}
+
+static void playtestFillRect(png_img* img, s32 x, s32 y, s32 w, s32 h, png_rgba color)
+{
+    for(s32 yy = 0; yy < h; yy++)
+        for(s32 xx = 0; xx < w; xx++)
+            playtestSetPixel(img, x + xx, y + yy, color);
+}
+
+static const char* playtestGlyph(char sym)
+{
+    switch(sym)
+    {
+    case '0': return "111101101101111";
+    case '1': return "010110010010111";
+    case '2': return "111001111100111";
+    case '3': return "111001111001111";
+    case '4': return "101101111001001";
+    case '5': return "111100111001111";
+    case '6': return "111100111101111";
+    case '7': return "111001001001001";
+    case '8': return "111101111101111";
+    case '9': return "111101111001111";
+    case 'A': return "111101111101101";
+    case 'B': return "110101110101110";
+    case 'D': return "110101101101110";
+    case 'F': return "111100110100100";
+    case 'L': return "100100100100111";
+    case 'R': return "110101110101101";
+    case 'U': return "101101101101111";
+    case 'X': return "101101010101101";
+    case 'Y': return "101101010010010";
+    case ':': return "000010000010000";
+    default: return NULL;
+    }
+}
+
+static void playtestDrawGlyph(png_img* img, char sym, s32 x, s32 y, s32 scale, png_rgba color)
+{
+    const char* glyph = playtestGlyph(sym);
+    if(glyph == NULL)
+        return;
+
+    for(s32 gy = 0; gy < 5; gy++)
+        for(s32 gx = 0; gx < 3; gx++)
+            if(glyph[gx + gy * 3] == '1')
+                playtestFillRect(img, x + gx * scale, y + gy * scale, scale, scale, color);
+}
+
+static void playtestDrawText(png_img* img, const char* text, s32 x, s32 y, s32 scale, png_rgba color)
+{
+    for(const char* ptr = text; *ptr; ++ptr)
+    {
+        if(*ptr == ' ')
+            x += scale * 4;
+        else
+        {
+            playtestDrawGlyph(img, (char)toupper((unsigned char)*ptr), x, y, scale, color);
+            x += scale * 4;
+        }
+    }
+}
+
+static void playtestOverlayButtons(png_img* img, tic80_gamepad gamepad)
+{
+    const struct
+    {
+        char label;
+        bool pressed;
+    } buttons[] =
+    {
+        {'U', gamepad.up},
+        {'D', gamepad.down},
+        {'L', gamepad.left},
+        {'R', gamepad.right},
+        {'A', gamepad.a},
+        {'B', gamepad.b},
+        {'X', gamepad.x},
+        {'Y', gamepad.y},
+    };
+
+    png_rgba bg = playtestColor(18, 20, 32, 220);
+    png_rgba on = playtestColor(255, 205, 117, 255);
+    png_rgba off = playtestColor(130, 140, 160, 255);
+
+    s32 x = 4;
+    s32 y = img->height - 18;
+    playtestFillRect(img, x - 2, y - 2, 8 * 10 + 4, 14, bg);
+
+    for(s32 i = 0; i < COUNT_OF(buttons); i++)
+        playtestDrawGlyph(img, buttons[i].label, x + i * 10, y, 2, buttons[i].pressed ? on : off);
+}
+
+static void playtestOverlayFrame(png_img* img, u32 frame)
+{
+    char text[64];
+    snprintf(text, sizeof text, "F:%06u", frame);
+    playtestFillRect(img, 2, 2, 60, 14, playtestColor(18, 20, 32, 220));
+    playtestDrawText(img, text, 6, 4, 2, playtestColor(255, 255, 255, 255));
+}
+
+static void playtestApplyOverlay(Console* console, png_img* img)
+{
+    playtestOverlayFrame(img, console->mcp.playtest.frameCount);
+    playtestOverlayButtons(img, console->mcp.playtest.lastFrameGamepads.first);
+}
+
+static bool savePlaytestTextFile(Console* console, const char* path, const char* text)
+{
+    return tic_fs_save(console->fs, path, text, (s32)strlen(text), true);
+}
+
+static int playtestLuaAbort(lua_State* lua, McpPlaytestRuntime* runtime, const char* message)
+{
+    (void)runtime;
+    lua_pushstring(lua, message);
+    return lua_error(lua);
+}
+
+static void playtestLuaTimeoutHook(lua_State* lua, lua_Debug* ar)
+{
+    (void)ar;
+    lua_pushlightuserdata(lua, (void*)&PlaytestRuntimeRegistryKey);
+    lua_gettable(lua, LUA_REGISTRYINDEX);
+    McpPlaytestRuntime* runtime = lua_touserdata(lua, -1);
+    lua_pop(lua, 1);
+
+    if(runtime == NULL)
+        return;
+
+    if(tic_sys_counter_get() > runtime->deadline)
+    {
+        runtime->console->mcp.playtest.timedOut = true;
+        copyPlaytestString(runtime->console->mcp.playtest.status, sizeof runtime->console->mcp.playtest.status, "timeout");
+        copyPlaytestString(runtime->console->mcp.playtest.message, sizeof runtime->console->mcp.playtest.message, "playtest episode timed out");
+        luaL_error(lua, "%s", PlaytestTimeoutSentinel);
+    }
+}
+
+static McpPlaytestRuntime* getPlaytestRuntime(lua_State* lua)
+{
+    return lua_touserdata(lua, lua_upvalueindex(1));
+}
+
+static int playtestLuaFrameAdvance(lua_State* lua)
+{
+    McpPlaytestRuntime* runtime = getPlaytestRuntime(lua);
+    Console* console = runtime->console;
+
+    if(!studio_playtest_frame_advance(console->studio))
+        return playtestLuaAbort(lua, runtime, "frameadvance() requires TIC-80 to be in run mode");
+
+    if(!consoleCapturePlaytestFrame(console))
+        return playtestLuaAbort(lua, runtime, "failed to capture playtest frame");
+
+    lua_pushinteger(lua, console->mcp.playtest.frameCount);
+    return 1;
+}
+
+static bool readPlaytestButton(lua_State* lua, s32 index, const char* key)
+{
+    lua_getfield(lua, index, key);
+    bool value = lua_toboolean(lua, -1);
+    lua_pop(lua, 1);
+    return value;
+}
+
+static int playtestLuaSetInput(lua_State* lua)
+{
+    McpPlaytestRuntime* runtime = getPlaytestRuntime(lua);
+    s32 player = 1;
+    s32 tableIndex = 1;
+
+    if(lua_gettop(lua) >= 2 && lua_isnumber(lua, 1))
+    {
+        player = (s32)lua_tointeger(lua, 1);
+        tableIndex = 2;
+    }
+
+    luaL_checktype(lua, tableIndex, LUA_TTABLE);
+
+    tic80_gamepad gamepad = {.data = 0};
+    gamepad.up = readPlaytestButton(lua, tableIndex, "up");
+    gamepad.down = readPlaytestButton(lua, tableIndex, "down");
+    gamepad.left = readPlaytestButton(lua, tableIndex, "left");
+    gamepad.right = readPlaytestButton(lua, tableIndex, "right");
+    gamepad.a = readPlaytestButton(lua, tableIndex, "a");
+    gamepad.b = readPlaytestButton(lua, tableIndex, "b");
+    gamepad.x = readPlaytestButton(lua, tableIndex, "x");
+    gamepad.y = readPlaytestButton(lua, tableIndex, "y");
+
+    if(player < 1 || player > TIC_GAMEPADS || !studio_playtest_set_gamepad(runtime->console->studio, player - 1, gamepad))
+        return playtestLuaAbort(lua, runtime, "invalid player number for set_input()");
+
+    return 0;
+}
+
+static int playtestLuaLog(lua_State* lua)
+{
+    McpPlaytestRuntime* runtime = getPlaytestRuntime(lua);
+    const char* text = luaL_checkstring(lua, 1);
+
+    if(runtime->console->mcp.playtest.logFile)
+    {
+        fprintf(runtime->console->mcp.playtest.logFile, "%u:%s\n", runtime->console->mcp.playtest.frameCount, text);
+        fflush(runtime->console->mcp.playtest.logFile);
+    }
+
+    return 0;
+}
+
+static int playtestLuaEndEpisode(lua_State* lua)
+{
+    McpPlaytestRuntime* runtime = getPlaytestRuntime(lua);
+    Console* console = runtime->console;
+    const char* status = luaL_optstring(lua, 1, "done");
+    const char* message = luaL_optstring(lua, 2, "");
+
+    console->mcp.playtest.finished = true;
+    copyPlaytestString(console->mcp.playtest.status, sizeof console->mcp.playtest.status, status);
+    copyPlaytestString(console->mcp.playtest.message, sizeof console->mcp.playtest.message, message);
+
+    lua_pushstring(lua, PlaytestEndedSignal);
+    return lua_error(lua);
+}
+
+static void registerPlaytestLuaFunction(lua_State* lua, const char* name, lua_CFunction fn, McpPlaytestRuntime* runtime)
+{
+    lua_pushlightuserdata(lua, runtime);
+    lua_pushcclosure(lua, fn, 1);
+    lua_setglobal(lua, name);
+}
+
+static bool playtestOpenRuntime(Console* console, s32 timeoutSeconds)
+{
+    McpPlaytestRuntime* runtime = calloc(1, sizeof *runtime);
+    if(runtime == NULL)
+        return false;
+
+    runtime->lua = luaL_newstate();
+    if(runtime->lua == NULL)
+    {
+        free(runtime);
+        return false;
+    }
+
+    runtime->console = console;
+    runtime->deadline = tic_sys_counter_get() + (u64)MAX(timeoutSeconds, 1) * tic_sys_freq_get();
+
+    luaL_openlibs(runtime->lua);
+
+    lua_pushlightuserdata(runtime->lua, (void*)&PlaytestRuntimeRegistryKey);
+    lua_pushlightuserdata(runtime->lua, runtime);
+    lua_settable(runtime->lua, LUA_REGISTRYINDEX);
+
+    registerPlaytestLuaFunction(runtime->lua, "frameadvance", playtestLuaFrameAdvance, runtime);
+    registerPlaytestLuaFunction(runtime->lua, "set_input", playtestLuaSetInput, runtime);
+    registerPlaytestLuaFunction(runtime->lua, "log", playtestLuaLog, runtime);
+    registerPlaytestLuaFunction(runtime->lua, "end_episode", playtestLuaEndEpisode, runtime);
+    lua_sethook(runtime->lua, playtestLuaTimeoutHook, LUA_MASKCOUNT, 10000);
+
+    console->mcp.playtest.runtime = runtime;
+    return true;
+}
+
+static bool openPlaytestLogFiles(Console* console)
+{
+    char logAbs[TICNAME_MAX];
+    char consoleAbs[TICNAME_MAX];
+    snprintf(logAbs, sizeof logAbs, "%s", tic_fs_path(console->fs, console->mcp.playtest.logPath));
+    snprintf(consoleAbs, sizeof consoleAbs, "%s", tic_fs_path(console->fs, console->mcp.playtest.consolePath));
+
+    if(logAbs[0] == '\0' || consoleAbs[0] == '\0')
+        return false;
+
+    console->mcp.playtest.logFile = fopen(logAbs, "wb");
+    console->mcp.playtest.consoleFile = fopen(consoleAbs, "wb");
+
+    if(console->mcp.playtest.logFile == NULL || console->mcp.playtest.consoleFile == NULL)
+    {
+        closePlaytestFiles(console);
+        return false;
+    }
+
+    return true;
+}
+
+static bool ensurePlaytestRunMode(Console* console)
+{
+    if(getStudioMode(console->studio) == TIC_RUN_MODE)
+        return true;
+
+    bool ignoredError = false;
+    char* output = consoleRunCommandMcp(console, "run", &ignoredError);
+    free(output);
+
+    return getStudioMode(console->studio) == TIC_RUN_MODE;
+}
+
+static bool preparePlaytestArtifacts(Console* console, const char* script, bool inputOverlay)
+{
+    static u32 nextEpisodeId = 0;
+    nextEpisodeId = nextEpisodeId % 3 + 1;
+
+    resetPlaytestState(console);
+
+    console->mcp.playtest.inputOverlay = inputOverlay;
+    console->mcp.playtest.episodeId = nextEpisodeId;
+
+    if(!resetPlaytestEpisodeSlot(console, nextEpisodeId))
+        return false;
+
+    copyPlaytestString(console->mcp.playtest.status, sizeof console->mcp.playtest.status, "done");
+
+    snprintf(console->mcp.playtest.artifactDir, sizeof console->mcp.playtest.artifactDir, "playtest/episode_%u", nextEpisodeId);
+    snprintf(console->mcp.playtest.screenshotsDir, sizeof console->mcp.playtest.screenshotsDir, "%s/screenshots", console->mcp.playtest.artifactDir);
+    snprintf(console->mcp.playtest.scriptPath, sizeof console->mcp.playtest.scriptPath, "%s/script.lua", console->mcp.playtest.artifactDir);
+    snprintf(console->mcp.playtest.logPath, sizeof console->mcp.playtest.logPath, "%s/log.txt", console->mcp.playtest.artifactDir);
+    snprintf(console->mcp.playtest.consolePath, sizeof console->mcp.playtest.consolePath, "%s/console.txt", console->mcp.playtest.artifactDir);
+
+    if(!ensurePlaytestDirTree(console->fs, "playtest")
+        || !ensurePlaytestDirTree(console->fs, console->mcp.playtest.artifactDir)
+        || !ensurePlaytestDirTree(console->fs, console->mcp.playtest.screenshotsDir))
+        return false;
+
+    if(!savePlaytestTextFile(console, console->mcp.playtest.scriptPath, script))
+        return false;
+
+    if(!openPlaytestLogFiles(console))
+        return false;
+
+    return true;
+}
+
+bool consoleCapturePlaytestFrame(Console* console)
+{
+    if(console == NULL || console->tic == NULL || console->fs == NULL || !console->mcp.playtest.active)
+        return false;
+
+    png_img img = {TIC80_WIDTH, TIC80_HEIGHT, malloc(TIC80_WIDTH * TIC80_HEIGHT * sizeof(png_rgba))};
+    if(img.data == NULL)
+        return false;
+
+    for(s32 y = 0; y < TIC80_HEIGHT; y++)
+        for(s32 x = 0; x < TIC80_WIDTH; x++)
+            img.values[x + y * TIC80_WIDTH] =
+                console->tic->product.screen[(x + TIC80_MARGIN_LEFT) + (y + TIC80_MARGIN_TOP) * TIC80_FULLWIDTH];
+
+    if(console->mcp.playtest.inputOverlay)
+        playtestApplyOverlay(console, &img);
+
+    png_buffer png = png_write(img, (png_buffer){NULL, 0});
+    free(img.data);
+
+    if(png.data == NULL || png.size <= 0)
+        return false;
+
+    char path[TICNAME_MAX];
+    snprintf(path, sizeof path, "%s/%06u.png", console->mcp.playtest.screenshotsDir, console->mcp.playtest.frameCount);
+
+    bool saved = tic_fs_save(console->fs, path, png.data, png.size, true);
+    free(png.data);
+
+    return saved;
+}
+
 static bool isMcpScreenshotAbsolutePath(const char* path)
 {
     if(path == NULL || *path == '\0')
@@ -4087,6 +4639,90 @@ char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isEr
         *isError = false;
 
     return result;
+}
+
+char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError)
+{
+    if(isError)
+        *isError = true;
+
+    if(console == NULL || console->studio == NULL || console->tic == NULL || console->fs == NULL)
+        return strdup("mcp playtest episode runner unavailable");
+
+    if(script == NULL || *script == '\0')
+        return strdup("empty playtest script");
+
+    resetPlaytestState(console);
+    playtestSetResult(console, "done", "script completed");
+
+    if(!ensurePlaytestRunMode(console))
+        return strdup("failed to enter run mode");
+
+    if(!preparePlaytestArtifacts(console, script, inputOverlay))
+    {
+        resetPlaytestState(console);
+        return strdup("failed to prepare playtest artifacts");
+    }
+
+    console->mcp.playtest.active = true;
+
+    if(!playtestOpenRuntime(console, timeoutSeconds))
+    {
+        resetPlaytestState(console);
+        return strdup("failed to initialize playtest runtime");
+    }
+
+    McpPlaytestRuntime* runtime = console->mcp.playtest.runtime;
+    int loadStatus = luaL_loadstring(runtime->lua, script);
+    int callStatus = LUA_OK;
+    const char* errorText = NULL;
+
+    if(loadStatus == LUA_OK)
+        callStatus = lua_pcall(runtime->lua, 0, 0, 0);
+
+    if(loadStatus != LUA_OK)
+    {
+        errorText = lua_tostring(runtime->lua, -1);
+        playtestSetResult(console, "error", errorText ? errorText : "failed to load playtest script");
+    }
+    else if(callStatus != LUA_OK)
+    {
+        errorText = lua_tostring(runtime->lua, -1);
+
+        if(errorText && strcmp(errorText, PlaytestEndedSignal) == 0)
+        {
+        }
+        else if(errorText && strcmp(errorText, PlaytestTimeoutSentinel) == 0)
+        {
+            console->mcp.playtest.timedOut = true;
+            playtestSetResult(console, "timeout", "playtest episode timed out");
+        }
+        else
+            playtestSetResult(console, "error", errorText ? errorText : "playtest script failed");
+    }
+
+    console->mcp.playtest.active = false;
+
+    char result[1024];
+    snprintf(result, sizeof result,
+        "status=%s\nmessage=%s\nartifact_path=./%s\nscript_path=./%s\nlog_path=./%s\nconsole_path=./%s\nscreenshots_path=./%s\nframes=%u",
+        console->mcp.playtest.status,
+        console->mcp.playtest.message,
+        console->mcp.playtest.artifactDir,
+        console->mcp.playtest.scriptPath,
+        console->mcp.playtest.logPath,
+        console->mcp.playtest.consolePath,
+        console->mcp.playtest.screenshotsDir,
+        console->mcp.playtest.frameCount);
+
+    bool success = strcmp(console->mcp.playtest.status, "error") != 0 && !console->mcp.playtest.timedOut;
+
+    resetPlaytestState(console);
+
+    if(isError)
+        *isError = !success;
+
+    return strdup(result);
 }
 
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)

@@ -52,6 +52,26 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Returns MCP text content describing saved relative path and resolved absolute path.
   - Returns `isError: true` with useful text when capture/encode/save fails.
 
+### Tool Name: `run_playtest_episode`
+- Input schema:
+  - `script` (string, required)
+  - `timeout_seconds` (integer, optional)
+  - `input_overlay` (boolean, optional)
+- Behavior:
+  - Runs a constrained playtest Lua script in a separate episode-owned Lua runtime.
+  - Supports `frameadvance()`, `set_input(...)`, `log(...)`, and `end_episode(...)`.
+  - Advances gameplay deterministically one frame at a time through the normal run-mode tick path.
+  - Writes artifacts under `./playtest/episode_n/`, including:
+    - `script.lua`
+    - `log.txt`
+    - `console.txt`
+    - `screenshots/000001.png`, `000002.png`, ...
+  - Captures one screenshot per advanced frame.
+  - When `input_overlay` is true, draws frame/input overlay into the saved screenshot artifact without changing normal screenshot behavior elsewhere.
+  - Retains only the latest three episode directories.
+  - Returns MCP text content summarizing status, message, frame count, and artifact path.
+  - Returns `isError: true` with useful text when script execution or artifact generation fails.
+
 ### Security/Execution Constraints
 - MCP command execution must use the existing TIC-80 console command system.
 - Command parity is required: any command available in the fantasy editor console must be callable via MCP `run_command`.
@@ -78,7 +98,7 @@ Feature is **PASSED** only when all items below are true:
    - `initialize` request gets valid response with capabilities.
    - `notifications/initialized` is accepted.
 2. Tool discovery passes:
-   - `tools/list` includes `run_command` and `capture_screenshot` with correct schemas.
+   - `tools/list` includes `run_command`, `capture_screenshot`, and `run_playtest_episode` with correct schemas.
 3. Tool execution passes:
    - `tools/call` for `run_command` executes a valid TIC-80 command and returns output.
    - Invalid command returns structured error (`isError: true`).
@@ -86,6 +106,11 @@ Feature is **PASSED** only when all items below are true:
    - `tools/call` for `capture_screenshot` saves PNG output and returns saved path text (`isError: false`).
    - `capture_screenshot` without `path` writes deterministic default path `mcp_capture.png`.
    - `capture_screenshot` rejects absolute or escaping paths with structured error (`isError: true`).
+   - `tools/call` for `run_playtest_episode` executes a one-frame playtest script and returns `isError: false` with status, message, frame count, and artifact path text.
+   - `run_playtest_episode` writes `script.lua`, `log.txt`, `console.txt`, and per-frame screenshots under `./playtest/episode_n/`.
+   - `run_playtest_episode` supports one-frame input injection for player 1 by default.
+   - `run_playtest_episode` can save screenshots with and without overlay and produces differing artifact PNGs when overlay is enabled.
+   - `run_playtest_episode` retains only the latest three episode directories.
    - Console parity holds: commands available in the fantasy editor console are callable via MCP with equivalent behavior.
 4. Wall-clock progression passes:
    - `run_command` can enter run mode, then after ~5s idle wait, `capture_screenshot` captures an advanced frame.
@@ -104,12 +129,23 @@ Feature is **PASSED** only when all items below are true:
 ## Required Test Evidence
 - Automated smoke script succeeds against built binary:
   - `tools/mcp/stdio_smoke.sh ./build/bin/tic80`
+- Automated playtest smoke script succeeds against built binary:
+  - `tools/mcp/playtest_episode_smoke.sh ./build/bin/tic80`
 - Automated regression script succeeds against built binary:
   - `tools/mcp/error_mode_regression.sh ./build/bin/tic80`
+- Automated playtest regression script succeeds against built binary:
+  - `tools/mcp/playtest_episode_regression.sh ./build/bin/tic80`
 - Test must include `run_command("run")`, a 5-second wait, and `capture_screenshot` with artifact validation.
 - Add/extend coverage for `run_command` success/failure and `capture_screenshot` success.
 - Add/extend automated coverage for MCP-triggered command errors using a stable Lua text-project fixture with explicit cart data sections.
 - Add/extend automated coverage for spontaneous cart/runtime errors using the same stable fixture and verify that a later screenshot changes after the delayed cart error.
+- Add automated coverage for `run_playtest_episode` using a small deterministic Lua fixture that proves:
+  - one-frame script execution
+  - per-frame screenshot artifact creation
+  - one-frame input injection
+  - overlay-on vs overlay-off artifact difference
+  - `trace(...)` capture into `console.txt`
+  - rolling retention of the latest three episode artifacts
 - Provide one recorded transcript (request/response) proving:
   - init -> list -> call flow for both tools,
   - stdout purity,

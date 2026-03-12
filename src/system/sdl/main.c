@@ -135,7 +135,99 @@ static bool mcpCopyTokenString(const char* json, const jsmntok_t* tok, char* dst
     if(tok->type != JSMN_STRING)
         return false;
 
-    return mcpCopyTokenRaw(json, tok, dst, size);
+    size_t out = 0;
+
+    for(s32 i = tok->start; i < tok->end; i++)
+    {
+        char c = json[i];
+
+        if(c == '\\')
+        {
+            i++;
+            if(i >= tok->end)
+                return false;
+
+            switch(json[i])
+            {
+            case '\\': c = '\\'; break;
+            case '"': c = '"'; break;
+            case '/': c = '/'; break;
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            default:
+                return false;
+            }
+        }
+
+        if(out + 1 >= size)
+            return false;
+
+        dst[out++] = c;
+    }
+
+    dst[out] = '\0';
+    return true;
+}
+
+static char* mcpDupTokenString(const char* json, const jsmntok_t* tok)
+{
+    if(tok->type != JSMN_STRING)
+        return NULL;
+
+    s32 len = tok->end - tok->start;
+    char* dst = calloc((size_t)len + 1, 1);
+
+    if(dst == NULL)
+        return NULL;
+
+    memcpy(dst, json + tok->start, (size_t)len);
+    return dst;
+}
+
+static bool mcpCopyTokenInteger(const char* json, const jsmntok_t* tok, s32* value)
+{
+    if(tok->type != JSMN_PRIMITIVE || value == NULL)
+        return false;
+
+    char buf[64];
+    if(!mcpCopyTokenRaw(json, tok, buf, sizeof buf))
+        return false;
+
+    char* end = NULL;
+    long parsed = strtol(buf, &end, 10);
+
+    if(end == NULL || *end != '\0')
+        return false;
+
+    *value = (s32)parsed;
+    return true;
+}
+
+static bool mcpCopyTokenBool(const char* json, const jsmntok_t* tok, bool* value)
+{
+    if(tok->type != JSMN_PRIMITIVE || value == NULL)
+        return false;
+
+    char buf[16];
+    if(!mcpCopyTokenRaw(json, tok, buf, sizeof buf))
+        return false;
+
+    if(strcmp(buf, "true") == 0)
+    {
+        *value = true;
+        return true;
+    }
+
+    if(strcmp(buf, "false") == 0)
+    {
+        *value = false;
+        return true;
+    }
+
+    return false;
 }
 
 static s32 mcpFindObjectValueToken(const char* json, const jsmntok_t* tokens, s32 count, s32 objectIndex, const char* key)
@@ -300,24 +392,53 @@ static void initMcpStdioMode()
     signal(SIGPIPE, SIG_IGN);
 #endif
 
+    // Keep stdio buffering aligned with select()-based polling. Buffered stdin
+    // can hide already-read MCP request lines from select(), stalling later
+    // requests that were fetched into stdio's internal buffer by fgets().
+    setbuf(stdin, NULL);
     // Keep stderr for diagnostics; stdout is reserved for MCP JSON-RPC frames.
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 }
 
-static bool runMcpTool(Studio* studio, SDL_mutex* mutex, bool runCommand, const char* commandText, const char* screenshotPath, bool* isError, char** output)
+typedef enum
+{
+    McpToolRunCommand,
+    McpToolCaptureScreenshot,
+    McpToolRunPlaytestEpisode,
+} McpToolKind;
+
+static bool runMcpTool(Studio* studio, SDL_mutex* mutex, McpToolKind tool, const char* commandText, const char* screenshotPath, s32 timeoutSeconds, bool inputOverlay, bool* isError, char** output)
 {
     if(mutex)
     {
         SDL_LockMutex(mutex);
-        *output = runCommand
-            ? studio_run_command_mcp(studio, commandText, isError)
-            : studio_capture_screenshot_mcp(studio, screenshotPath, isError);
+        switch(tool)
+        {
+        case McpToolRunCommand:
+            *output = studio_run_command_mcp(studio, commandText, isError);
+            break;
+        case McpToolCaptureScreenshot:
+            *output = studio_capture_screenshot_mcp(studio, screenshotPath, isError);
+            break;
+        case McpToolRunPlaytestEpisode:
+            *output = studio_run_playtest_episode_mcp(studio, commandText, timeoutSeconds, inputOverlay, isError);
+            break;
+        }
         SDL_UnlockMutex(mutex);
     }
-    else *output = runCommand
-        ? studio_run_command_mcp(studio, commandText, isError)
-        : studio_capture_screenshot_mcp(studio, screenshotPath, isError);
+    else switch(tool)
+    {
+    case McpToolRunCommand:
+        *output = studio_run_command_mcp(studio, commandText, isError);
+        break;
+    case McpToolCaptureScreenshot:
+        *output = studio_capture_screenshot_mcp(studio, screenshotPath, isError);
+        break;
+    case McpToolRunPlaytestEpisode:
+        *output = studio_run_playtest_episode_mcp(studio, commandText, timeoutSeconds, inputOverlay, isError);
+        break;
+    }
 
     return true;
 }
@@ -404,7 +525,7 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
         if(strcmp(method, "tools/list") == 0)
         {
             if(request.hasId)
-                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG. If provided, path will be interpreted relative to the active TIC filesystem root (`./`); omit it to use mcp_capture.png.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}}]}");
+                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG. If provided, path will be interpreted relative to the active TIC filesystem root (`./`); omit it to use mcp_capture.png.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}},{\"name\":\"run_playtest_episode\",\"description\":\"Run a scripted playtest episode against the currently loaded cart and write artifacts under ./playtest/episode_n.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\"},\"timeout_seconds\":{\"type\":\"integer\"},\"input_overlay\":{\"type\":\"boolean\"}},\"required\":[\"script\"],\"additionalProperties\":false}}]}");
 
             freeMcpRequest(&request);
             continue;
@@ -436,8 +557,9 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
 
             bool runCommand = mcpTokenEq(request.json, &request.tokens[name], "run_command");
             bool captureScreenshot = mcpTokenEq(request.json, &request.tokens[name], "capture_screenshot");
+            bool runPlaytestEpisode = mcpTokenEq(request.json, &request.tokens[name], "run_playtest_episode");
 
-            if(!runCommand && !captureScreenshot)
+            if(!runCommand && !captureScreenshot && !runPlaytestEpisode)
             {
                 writeMcpResult(idJson, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
                 freeMcpRequest(&request);
@@ -454,6 +576,8 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
 
             bool isError = false;
             char* output = NULL;
+            s32 timeoutSeconds = 120;
+            bool inputOverlay = true;
 
             if(runCommand)
             {
@@ -480,9 +604,9 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
                     continue;
                 }
 
-                runMcpTool(studio, mutex, true, commandText, NULL, &isError, &output);
+                runMcpTool(studio, mutex, McpToolRunCommand, commandText, NULL, 0, true, &isError, &output);
             }
-            else
+            else if(captureScreenshot)
             {
                 const char* screenshotPath = NULL;
                 char screenshotPathBuf[1024];
@@ -504,7 +628,53 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
                     }
                 }
 
-                runMcpTool(studio, mutex, false, NULL, screenshotPath, &isError, &output);
+                runMcpTool(studio, mutex, McpToolCaptureScreenshot, NULL, screenshotPath, 0, true, &isError, &output);
+            }
+            else
+            {
+                if(arguments < 0)
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                s32 script = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "script");
+                if(script < 0 || request.tokens[script].type != JSMN_STRING)
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                char scriptText[MCP_MAX_LINE];
+                if(!mcpCopyTokenString(request.json, &request.tokens[script], scriptText, sizeof scriptText))
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                s32 timeout = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "timeout_seconds");
+                if(timeout >= 0)
+                {
+                    if(!mcpCopyTokenInteger(request.json, &request.tokens[timeout], &timeoutSeconds))
+                    {
+                        writeMcpError(idJson, -32602, "Invalid params");
+                        freeMcpRequest(&request);
+                        continue;
+                    }
+                }
+
+                s32 overlay = mcpFindObjectValueToken(request.json, request.tokens, request.count, arguments, "input_overlay");
+                if(overlay >= 0 && !mcpCopyTokenBool(request.json, &request.tokens[overlay], &inputOverlay))
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                runMcpTool(studio, mutex, McpToolRunPlaytestEpisode, scriptText, NULL, timeoutSeconds, inputOverlay, &isError, &output);
             }
             char* escaped = mcpEscapeJsonString(output ? output : "");
 

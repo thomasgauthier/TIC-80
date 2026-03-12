@@ -2606,6 +2606,65 @@ char* studio_capture_screenshot_mcp(Studio* studio, const char* path, bool* isEr
     return strdup("mcp screenshot capture unavailable");
 }
 
+char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError)
+{
+#if defined(BUILD_EDITORS)
+    if(studio && studio->console)
+        return consoleRunPlaytestEpisodeMcp(studio->console, script, timeoutSeconds, inputOverlay, isError);
+#endif
+
+    if(isError)
+        *isError = true;
+
+    return strdup("mcp playtest episode runner unavailable");
+}
+
+bool studio_playtest_set_gamepad(Studio* studio, s32 player, tic80_gamepad gamepad)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || studio->console == NULL)
+        return false;
+
+    if(player < 0 || player >= TIC_GAMEPADS)
+        return false;
+
+    studio->console->mcp.playtest.pendingMask |= (u8)(1u << player);
+
+    switch(player)
+    {
+    case 0: studio->console->mcp.playtest.pendingGamepads.first = gamepad; break;
+    case 1: studio->console->mcp.playtest.pendingGamepads.second = gamepad; break;
+    case 2: studio->console->mcp.playtest.pendingGamepads.third = gamepad; break;
+    case 3: studio->console->mcp.playtest.pendingGamepads.fourth = gamepad; break;
+    }
+
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool studio_playtest_frame_advance(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || studio->console == NULL || getStudioMode(studio) != TIC_RUN_MODE)
+        return false;
+
+    tic80_input input = {0};
+    input.gamepads = studio->console->mcp.playtest.pendingGamepads;
+    studio->console->mcp.playtest.lastFrameGamepads = input.gamepads;
+    studio->console->mcp.playtest.pendingGamepads.data = 0;
+    studio->console->mcp.playtest.pendingMask = 0;
+
+    studio_tick(studio, input);
+    studio->console->mcp.playtest.frameCount++;
+
+    return true;
+#else
+    return false;
+#endif
+}
+
 void exitGame(Studio* studio)
 {
     if(studio->prevMode == TIC_SURF_MODE)

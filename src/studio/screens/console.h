@@ -113,6 +113,29 @@ struct Console
             tic_tick_data* previousTickData;
             u32 preservedScreen[TIC80_FULLWIDTH * TIC80_FULLHEIGHT];
         } command;
+
+        struct
+        {
+            bool active;
+            bool finished;
+            bool timedOut;
+            bool inputOverlay;
+            u32 episodeId;
+            u32 frameCount;
+            u8 pendingMask;
+            tic80_gamepads pendingGamepads;
+            tic80_gamepads lastFrameGamepads;
+            char artifactDir[TICNAME_MAX];
+            char screenshotsDir[TICNAME_MAX];
+            char scriptPath[TICNAME_MAX];
+            char logPath[TICNAME_MAX];
+            char consolePath[TICNAME_MAX];
+            char status[64];
+            char message[256];
+            FILE* logFile;
+            FILE* consoleFile;
+            void* runtime;
+        } playtest;
     } mcp;
 
     CommandDesc* desc;
@@ -136,3 +159,5 @@ void freeConsole(Console* console);
 void forceAutoSave(Console* console, const char* cart_name);
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError);
 char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError);
+char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError);
+bool consoleCapturePlaytestFrame(Console* console);

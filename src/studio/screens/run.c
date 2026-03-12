@@ -30,6 +30,11 @@ static void onTrace(void* data, const char* text, u8 color)
 {
 #if defined(BUILD_EDITORS)
     Run* run = (Run*)data;
+    if(run->console && run->console->mcp.playtest.active && run->console->mcp.playtest.consoleFile)
+    {
+        fprintf(run->console->mcp.playtest.consoleFile, "%s\n", text ? text : "");
+        fflush(run->console->mcp.playtest.consoleFile);
+    }
     run->console->trace(run->console, text, color);
 #endif
 }
