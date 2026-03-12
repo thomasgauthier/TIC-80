@@ -2,6 +2,8 @@
 
 This guide documents how to build TIC-80 fantasy computer for a headless system (no monitor, no GPU) using Xvfb for virtual display.
 
+This is an external runtime/deployment setup. It does not mean TIC-80's `--mcp` flag is itself a special no-window mode. `--mcp` selects MCP stdio transport; headless execution is achieved here by launching TIC-80 inside a virtual display and forcing software rendering.
+
 ## System Info
 - OS: Debian GNU/Linux 13 (Trixie)
 - Architecture: x86_64
@@ -70,13 +72,29 @@ Use `--parallel` to use all available CPU cores for faster compilation. This wil
 Since there's no physical display, use Xvfb (X Virtual Framebuffer):
 
 ```bash
-xvfb-run --auto-servernum ./bin/tic80 --skip
+xvfb-run --auto-servernum ./bin/tic80 --skip --soft
 ```
 
 **Useful options:**
 - `--skip` - Skip the startup animation (recommended for headless)
 - `--soft` - Force software rendering
 - `--cli` - Console-only output
+
+### MCP note
+
+When using MCP in a headless environment, keep the same separation of concerns:
+
+- `--mcp` enables MCP stdio transport
+- `xvfb-run` provides a virtual graphical environment
+- `--soft` forces SDL software rendering
+
+Example:
+
+```bash
+xvfb-run --auto-servernum ./bin/tic80 --skip --soft --mcp
+```
+
+This means headless MCP support is valid even though TIC-80 itself still believes it is running in a graphical environment.
 
 ### Example output:
 ```
@@ -124,6 +142,7 @@ This is sufficient for running TIC-80 in headless mode for:
 - Server-side game rendering
 - CI/CD pipelines
 - Development on headless systems
+- Headless MCP sessions driven over stdio
 
 ## Binary Location
 

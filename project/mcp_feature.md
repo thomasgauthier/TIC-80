@@ -8,7 +8,7 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
 
 ## Scope
 - In scope:
-  - `--mcp` startup mode for headless/stdin-stdout operation.
+  - `--mcp` startup mode for MCP stdio transport.
   - MCP handshake and request/response flow over newline-delimited JSON.
   - Tool discovery and tool execution for `run_command(str)` and `capture_screenshot(path?)`.
   - MCP idle tick progression so wall-clock waits advance run-mode frames.
@@ -65,8 +65,10 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Existing behavior remains unchanged unless intentionally improved.
 
 ## Headless Runtime Requirements
-- Must run without opening UI windows in `--mcp` mode.
+- `--mcp` is orthogonal to graphical vs headless execution.
+- `--mcp` must work in normal graphical environments.
 - Must operate correctly on headless systems where only stdio is available.
+- Headless execution may be achieved externally, for example with `xvfb-run --soft`.
 - While waiting for incoming stdin messages, MCP mode must keep advancing `studio_tick` in wall-clock time.
 
 ## PASS Criteria (Feature Completion)
@@ -94,7 +96,8 @@ Feature is **PASSED** only when all items below are true:
 5. Stderr separation passes:
    - Non-protocol diagnostics (if any) are emitted to `stderr`, not `stdout`.
 6. Headless execution passes:
-   - `./build/bin/tic80 --mcp` works end-to-end without GUI requirements.
+   - `./build/bin/tic80 --mcp` works end-to-end in graphical environments.
+   - `xvfb-run --auto-servernum ./bin/tic80 --skip --soft --mcp` works end-to-end for headless validation.
 7. Regression safety passes:
    - Existing non-MCP startup/CLI behavior still works.
 
@@ -111,6 +114,7 @@ Feature is **PASSED** only when all items below are true:
   - init -> list -> call flow for both tools,
   - stdout purity,
   - stderr separation.
+- Headless validation may rely on external environment setup rather than an in-process no-window mode.
 
 ## Suggested Milestones
 1. Wire `run_command` and `capture_screenshot` into `tools/list`.

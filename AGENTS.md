@@ -24,7 +24,6 @@ cmake --build . --parallel
 ```
 
 Headless-safe expectations are mandatory:
-- Never enable SDLGPU/OpenGL path (do not pass `-DBUILD_SDLGPU=On` unless user explicitly asks).
 - Do not add alternative graphics/window-system flags unless user explicitly asks.
 - Do not use alternative build invocations unless the user explicitly asks.
 
@@ -33,11 +32,15 @@ Headless-safe expectations are mandatory:
 After building for headless validation, run TIC-80 via Xvfb exactly as documented:
 
 ```bash
-xvfb-run --auto-servernum ./bin/tic80 --skip
+xvfb-run --auto-servernum ./bin/tic80 --skip --soft
 ```
 
+Headless-safe expectations are mandatory:
+- `--soft` is the runtime choice that forces SDL software rendering.
+- `xvfb-run` provides a virtual X server; it does not by itself disable accelerated rendering.
+- Do not omit `--soft` in headless validation flows unless the user explicitly asks.
+
 If additional runtime behavior is needed, only use documented headless-safe options:
-- `--soft` (force software rendering)
 - `--cli` (console-only output)
 
 Do not run GUI-dependent launch commands directly in headless validation flows unless the user explicitly asks.

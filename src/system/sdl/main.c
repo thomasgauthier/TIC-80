@@ -289,7 +289,12 @@ static bool mcpWaitForStdin(u32 timeoutMs)
 #endif
 }
 
-static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
+static bool isMcpEnabled(s32 argc, char** argv)
+{
+    return hasArg(argc, argv, "--mcp");
+}
+
+static void initMcpStdioMode()
 {
 #if defined(__TIC_LINUX__)
     signal(SIGPIPE, SIG_IGN);
@@ -298,44 +303,39 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
     // Keep stderr for diagnostics; stdout is reserved for MCP JSON-RPC frames.
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
+}
 
-    Studio* mcpStudio = studio_create(argc, argv, TIC80_SAMPLERATE, SCREEN_FORMAT, folder, 4, tic_layout_qwerty);
-    if(mcpStudio == NULL)
+static bool runMcpTool(Studio* studio, SDL_mutex* mutex, bool runCommand, const char* commandText, const char* screenshotPath, bool* isError, char** output)
+{
+    if(mutex)
     {
-        fprintf(stderr, "failed to initialize studio for mcp mode\n");
-        return 1;
+        SDL_LockMutex(mutex);
+        *output = runCommand
+            ? studio_run_command_mcp(studio, commandText, isError)
+            : studio_capture_screenshot_mcp(studio, screenshotPath, isError);
+        SDL_UnlockMutex(mutex);
     }
+    else *output = runCommand
+        ? studio_run_command_mcp(studio, commandText, isError)
+        : studio_capture_screenshot_mcp(studio, screenshotPath, isError);
 
+    return true;
+}
+
+static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
+{
     char line[MCP_MAX_LINE];
-    const u32 frameMs = MAX(1000 / TIC80_FRAMERATE, 1);
-    u32 lastTick = SDL_GetTicks();
-    u32 accumulator = 0;
-    const tic80_input emptyInput = {0};
 
-    while(true)
+    while(mcpWaitForStdin(0))
     {
-        u32 now = SDL_GetTicks();
-        accumulator += now - lastTick;
-        lastTick = now;
-
-        while(accumulator >= frameMs)
-        {
-            studio_tick(mcpStudio, emptyInput);
-            accumulator -= frameMs;
-        }
-
-        const u32 waitMs = accumulator < frameMs ? frameMs - accumulator : 0;
-        if(!mcpWaitForStdin(MIN(waitMs, 50)))
-            continue;
-
         if(!fgets(line, sizeof line, stdin))
-            break;
+            return false;
 
         McpRequest request;
         if(!parseMcpRequest(line, &request))
         {
             writeMcpError("null", -32700, "Parse error");
-            continue;
+            return true;
         }
 
         const char* idJson = "null";
@@ -480,7 +480,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
                     continue;
                 }
 
-                output = studio_run_command_mcp(mcpStudio, commandText, &isError);
+                runMcpTool(studio, mutex, true, commandText, NULL, &isError, &output);
             }
             else
             {
@@ -504,7 +504,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
                     }
                 }
 
-                output = studio_capture_screenshot_mcp(mcpStudio, screenshotPath, &isError);
+                runMcpTool(studio, mutex, false, NULL, screenshotPath, &isError, &output);
             }
             char* escaped = mcpEscapeJsonString(output ? output : "");
 
@@ -545,9 +545,7 @@ static s32 runMcpStdio(s32 argc, char** argv, const char* folder)
         freeMcpRequest(&request);
     }
 
-    studio_delete(mcpStudio);
-
-    return 0;
+    return true;
 }
 
 enum
@@ -669,6 +667,11 @@ static struct
       SDL_AudioSpec       spec;
       SDL_AudioDeviceID   device;
     } audioIn;
+
+    struct
+    {
+        bool enabled;
+    } mcp;
 } platform
 #if defined(TOUCH_INPUT_SUPPORT)
 =
@@ -2230,6 +2233,12 @@ static void gpuTick()
 {
     const tic_mem* tic = studio_mem(platform.studio);
 
+    if(platform.mcp.enabled && !processMcpStdio(platform.studio, platform.audio.mutex))
+    {
+        studio_exit(platform.studio);
+        return;
+    }
+
     pollEvents();
 
     if(studio_alive(platform.studio))
@@ -2397,6 +2406,11 @@ static s32 start(s32 argc, char **argv, const char* folder)
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
 #endif
 
+    platform.mcp.enabled = isMcpEnabled(argc, argv);
+
+    if(platform.mcp.enabled)
+        initMcpStdioMode();
+
     int result = SDL_Init(SDL_INIT_VIDEO);
     if (result != 0)
     {
@@ -2423,7 +2437,12 @@ static s32 start(s32 argc, char **argv, const char* folder)
         if (studio_config(platform.studio)->cli)
         {
             while (!studio_alive(platform.studio))
+            {
+                if(platform.mcp.enabled && !processMcpStdio(platform.studio, platform.audio.mutex))
+                    break;
+
                 studio_tick(platform.studio, platform.input);
+            }
         }
         else
         {
@@ -2590,9 +2609,6 @@ static s32 emsStart(s32 argc, char **argv, const char* folder)
 s32 main(s32 argc, char **argv)
 {
     const char* folder = getAppFolder();
-
-    if(hasArg(argc, argv, "--mcp"))
-        return runMcpStdio(argc, argv, folder);
 
 #if defined(__TIC_WINDOWS__)
     {
