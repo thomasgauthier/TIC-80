@@ -17,6 +17,12 @@ function TIC()
   cls(12)
   rect(12, 20, 216, 96, 6)
   rect(x, 54, 18, 18, 14)
+  if DEBUG_MODE then
+    rectb(x-2, 52, 22, 22, 2)
+    rect(180, 32, 20, 20, 2)
+    print("DEBUG", 176, 56, 2, false, 1, true)
+    trace("debug on")
+  end
   print("PLAYTEST", 86, 26, 1, false, 1, true)
   print("FRAME "..frame, 84, 94, 15, false, 1, true)
   trace("tick "..frame)

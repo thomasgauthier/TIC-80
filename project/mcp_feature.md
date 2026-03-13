@@ -61,6 +61,7 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Runs a constrained playtest Lua script in a separate episode-owned Lua runtime.
   - Supports `frameadvance()`, `set_input(...)`, `log(...)`, and `end_episode(...)`.
   - Advances gameplay deterministically one frame at a time through the normal run-mode tick path.
+  - For Lua carts, temporarily injects `DEBUG_MODE=true` into the loaded cart runtime for the duration of the episode, then restores `DEBUG_MODE=nil` afterward.
   - Writes artifacts under `./playtest/episode_n/`, including:
     - `script.lua`
     - `log.txt`
@@ -109,6 +110,7 @@ Feature is **PASSED** only when all items below are true:
    - `tools/call` for `run_playtest_episode` executes a one-frame playtest script and returns `isError: false` with status, message, frame count, and artifact path text.
    - `run_playtest_episode` writes `script.lua`, `log.txt`, `console.txt`, and per-frame screenshots under `./playtest/episode_n/`.
    - `run_playtest_episode` supports one-frame input injection for player 1 by default.
+   - `run_playtest_episode` lets Lua cart code branch on `DEBUG_MODE` during the episode and clears the flag after the episode ends.
    - `run_playtest_episode` can save screenshots with and without overlay and produces differing artifact PNGs when overlay is enabled.
    - `run_playtest_episode` retains only the latest three episode directories.
    - Console parity holds: commands available in the fantasy editor console are callable via MCP with equivalent behavior.
@@ -139,10 +141,11 @@ Feature is **PASSED** only when all items below are true:
 - Add/extend coverage for `run_command` success/failure and `capture_screenshot` success.
 - Add/extend automated coverage for MCP-triggered command errors using a stable Lua text-project fixture with explicit cart data sections.
 - Add/extend automated coverage for spontaneous cart/runtime errors using the same stable fixture and verify that a later screenshot changes after the delayed cart error.
-- Add automated coverage for `run_playtest_episode` using a small deterministic Lua fixture that proves:
+  - Add automated coverage for `run_playtest_episode` using a small deterministic Lua fixture that proves:
   - one-frame script execution
   - per-frame screenshot artifact creation
   - one-frame input injection
+  - Lua cart-side `DEBUG_MODE` visuals appear during the episode and are gone again after teardown
   - overlay-on vs overlay-off artifact difference
   - `trace(...)` capture into `console.txt`
   - rolling retention of the latest three episode artifacts

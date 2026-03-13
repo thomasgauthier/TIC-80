@@ -172,6 +172,19 @@ def run_episode(proc, request_id, script, overlay):
     return text
 
 
+def call_tool(proc, request_id, name, arguments):
+    send(proc, {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": arguments,
+        },
+    })
+    return recv_response(proc, request_id)["result"]
+
+
 proc = subprocess.Popen(
     cmd,
     cwd=root,
@@ -224,8 +237,21 @@ episode1 = root / "playtest" / "episode_1"
 assert episode1.is_dir(), episode1
 assert (episode1 / "log.txt").read_text().find("baseline") >= 0
 assert "tick " in (episode1 / "console.txt").read_text()
+assert "debug on" in (episode1 / "console.txt").read_text()
 baseline_png = episode1 / "screenshots" / "000001.png"
 assert baseline_png.is_file(), baseline_png
+
+debug_on_pixel = pixel(baseline_png, 181, 33)
+debug_off_pixel = pixel(baseline_png, 175, 33)
+assert debug_on_pixel != debug_off_pixel, (debug_on_pixel, debug_off_pixel)
+
+time.sleep(0.2)
+post_episode_result = call_tool(proc, 14, "capture_screenshot", {"path": "playtest/post_episode_after_baseline.png"})
+assert post_episode_result["isError"] is False, post_episode_result
+post_episode_png = root / "playtest" / "post_episode_after_baseline.png"
+assert post_episode_png.is_file(), post_episode_png
+post_debug_pixel = pixel(post_episode_png, 181, 33)
+assert post_debug_pixel != debug_on_pixel, (post_debug_pixel, debug_on_pixel)
 
 run_episode(proc, 11, move_script, False)
 episode2 = root / "playtest" / "episode_2"
@@ -253,6 +279,23 @@ episodes = sorted(path.name for path in (root / "playtest").glob("episode_*") if
 assert len(episodes) == 3, episodes
 assert "episode_1" in episodes, episodes
 assert "retention" in (root / "playtest" / "episode_1" / "log.txt").read_text()
+
+error_script = "\n".join([
+    "frameadvance()",
+    "error('episode boom')",
+])
+
+error_result = call_tool(proc, 15, "run_playtest_episode", {
+    "script": error_script,
+    "timeout_seconds": 5,
+    "input_overlay": False,
+})
+assert error_result["isError"] is True, error_result
+assert "episode boom" in error_result["content"][0]["text"], error_result
+
+debug_state = call_tool(proc, 16, "run_command", {"command": "eval trace(DEBUG_MODE == nil and 'debug off' or 'debug on')"})
+assert debug_state["isError"] is False, debug_state
+assert "debug off" in debug_state["content"][0]["text"], debug_state
 
 proc.stdin.close()
 time.sleep(0.5)

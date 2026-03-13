@@ -52,6 +52,7 @@ Source spec: `project/mcp_feature.md`
   - Uses `tools/mcp/fixtures/playtest_episode.lua` as a deterministic startup-loaded Lua fixture.
   - Verifies `run_playtest_episode` can execute a one-frame script and create `script.lua`, `log.txt`, `console.txt`, and `screenshots/000001.png`.
   - Verifies one-frame injected input changes the captured frame as expected.
+  - Verifies Lua cart code can branch on `DEBUG_MODE` during the episode and that debug-only visuals disappear again after teardown.
   - Verifies overlay-enabled episode screenshots differ from overlay-disabled screenshots.
   - Verifies cart `trace(...)` output is recorded in `console.txt`.
   - Verifies only the latest three `./playtest/episode_n` artifact directories are retained.

@@ -4459,6 +4459,58 @@ static bool ensurePlaytestRunMode(Console* console)
     return getStudioMode(console->studio) == TIC_RUN_MODE;
 }
 
+static bool playtestUsesLuaCart(Console* console)
+{
+    if(console == NULL || console->tic == NULL)
+        return false;
+
+    const tic_script* script = tic_get_script(console->tic);
+
+    return script
+        && script->name
+        && strcmp(script->name, "lua") == 0;
+}
+
+static bool playtestEvalCart(Console* console, const char* expr, char* errorText, size_t errorSize)
+{
+    if(errorText && errorSize)
+        errorText[0] = '\0';
+
+    if(console == NULL || expr == NULL || *expr == '\0')
+        return false;
+
+    char command[TICNAME_MAX];
+    snprintf(command, sizeof command, "eval %s", expr);
+
+    bool isError = false;
+    char* output = consoleRunCommandMcp(console, command, &isError);
+    bool ok = !isError;
+
+    if(!ok && errorText && errorSize)
+        copyPlaytestString(errorText, errorSize, output && *output ? output : "cart eval failed");
+
+    free(output);
+    return ok;
+}
+
+static bool ensurePlaytestCartInitialized(Console* console)
+{
+    if(console == NULL || console->studio == NULL || console->tic == NULL)
+        return false;
+
+    if(getStudioMode(console->studio) != TIC_RUN_MODE)
+        return false;
+
+    tic_core* core = (tic_core*)console->tic;
+
+    if(core == NULL || core->state.initialized)
+        return true;
+
+    studio_tick(console->studio, (tic80_input){0});
+
+    return core->state.initialized;
+}
+
 static bool preparePlaytestArtifacts(Console* console, const char* script, bool inputOverlay)
 {
     static u32 nextEpisodeId = 0;
@@ -4664,10 +4716,38 @@ char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 tim
         return strdup("failed to prepare playtest artifacts");
     }
 
+    const bool useLuaDebugMode = playtestUsesLuaCart(console);
+    bool debugModeEnabled = false;
+
+    if(useLuaDebugMode)
+    {
+        char debugError[256];
+
+        if(!ensurePlaytestCartInitialized(console))
+        {
+            resetPlaytestState(console);
+            return strdup("failed to initialize cart runtime before enabling DEBUG_MODE");
+        }
+
+        if(!playtestEvalCart(console, "DEBUG_MODE=true", debugError, sizeof debugError))
+        {
+            resetPlaytestState(console);
+            return strdup(debugError[0] ? debugError : "failed to enable DEBUG_MODE for playtest");
+        }
+
+        debugModeEnabled = true;
+    }
+
     console->mcp.playtest.active = true;
 
     if(!playtestOpenRuntime(console, timeoutSeconds))
     {
+        if(debugModeEnabled)
+        {
+            char ignored[256];
+            playtestEvalCart(console, "DEBUG_MODE=nil", ignored, sizeof ignored);
+        }
+
         resetPlaytestState(console);
         return strdup("failed to initialize playtest runtime");
     }
@@ -4702,6 +4782,14 @@ char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 tim
     }
 
     console->mcp.playtest.active = false;
+
+    if(debugModeEnabled)
+    {
+        char debugError[256];
+
+        if(!playtestEvalCart(console, "DEBUG_MODE=nil", debugError, sizeof debugError))
+            playtestSetResult(console, "error", debugError[0] ? debugError : "failed to clear DEBUG_MODE after playtest");
+    }
 
     char result[1024];
     snprintf(result, sizeof result,

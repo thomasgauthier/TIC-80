@@ -91,7 +91,9 @@ assert (artifact / "log.txt").is_file()
 assert (artifact / "console.txt").is_file()
 assert (artifact / "screenshots" / "000001.png").is_file()
 assert "start" in (artifact / "log.txt").read_text(), "missing log.txt payload"
-assert "tick 1" in (artifact / "console.txt").read_text(), "missing console trace"
+console_text = (artifact / "console.txt").read_text()
+assert "debug on" in console_text, "missing debug trace"
+assert "tick 2" in console_text, "missing console trace"
 PY
 
 echo "MCP playtest episode smoke test passed."
