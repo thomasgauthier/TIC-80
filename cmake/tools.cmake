@@ -2,9 +2,17 @@
 # bin2txt cart2prj prj2cart xplode wasmp2cart
 ################################
 
-if(BUILD_TOOLS)
+set(TOOLS_DIR ${CMAKE_SOURCE_DIR}/build/tools)
 
-    set(TOOLS_DIR ${CMAKE_SOURCE_DIR}/build/tools)
+if(UNIX)
+    add_executable(tic80ctl ${TOOLS_DIR}/tic80ctl.c)
+    if(LINUX)
+        target_link_libraries(tic80ctl m)
+    endif()
+    install(TARGETS tic80ctl RUNTIME DESTINATION bin)
+endif()
+
+if(BUILD_TOOLS)
 
     add_executable(cart2prj ${TOOLS_DIR}/cart2prj.c ${CMAKE_SOURCE_DIR}/src/studio/project.c)
     target_include_directories(cart2prj PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)

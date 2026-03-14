@@ -1,6 +1,6 @@
 # `tic80ctl` Shim
 
-`tic80ctl` is a POSIX-shell CLI shim over the existing TIC-80 MCP server.
+`tic80ctl` is now a small C CLI plus a hidden local supervisor over the existing TIC-80 MCP server.
 
 It does **not** define new gameplay or screenshot semantics. Instead, it reuses the existing MCP contracts:
 
@@ -20,17 +20,18 @@ That means:
 
 ## Session Model
 
-V1 uses one long-lived default session.
+V1 uses one long-lived default session owned by a local supervisor process.
 
 Commands:
 
-- `tic80ctl start [cart_path]`
+- `tic80ctl start`
 - `tic80ctl status`
 - `tic80ctl stop`
 
 The session persists:
 
-- PID
+- supervisor PID
+- loopback TCP port + session token
 - cwd
 - stdout/stderr log paths
 
@@ -50,13 +51,40 @@ Convenience aliases:
 
 ## Runtime Launch
 
-`tic80ctl start` should prefer a plain graphical launch when a display is already available, and otherwise fall back to a headless-safe launch using:
+`tic80ctl start` starts an empty session only. It must not accept a cart path. Carts are loaded afterward with:
 
 ```sh
-xvfb-run --auto-servernum ./bin/tic80 --skip --soft --mcp --fs .
+tic80ctl load <cart_path>
 ```
 
-This preserves the existing rule that `--mcp` is transport-only, while still giving the CLI a reliable terminal/CI story.
+The supervisor launches TIC-80 with the headless-safe MCP shape:
+
+```sh
+xvfb-run --auto-servernum ./bin/tic80 --skip --soft --mcp --fs "$PWD"
+```
+
+This preserves the existing rule that `--mcp` is transport-only while moving durability, liveness tracking, and request serialization into a process that is suited to supervision.
+
+If needed, the full launch command can be overridden with `TIC80CTL_LAUNCH_COMMAND`.
+When set, `tic80ctl` executes that exact command via the shell from the session working directory instead of using the default launch shape.
+
+## Supervisor Contract
+
+The hidden server mode owns:
+
+- the real TIC-80 MCP child process
+- the child stdio pipes
+- MCP initialize/probe during startup
+- serialized MCP request forwarding for later CLI invocations
+- session health reporting based on real child usability rather than shell wrapper guesses
+
+`tic80ctl start` only succeeds after:
+
+- the supervisor is running
+- TIC-80 launched
+- MCP initialize succeeded
+- a follow-up probe succeeded
+- the child still appears alive after initialization
 
 ## Output Style
 

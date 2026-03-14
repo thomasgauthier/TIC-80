@@ -2,4 +2,11 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$SCRIPT_DIR/tools/tic80ctl" "$@"
+BIN="${TIC80CTL_CLI_BIN:-$SCRIPT_DIR/build/bin/tic80ctl}"
+
+if [ ! -x "$BIN" ]; then
+  printf 'tic80ctl: built binary not found at %s\n' "$BIN" >&2
+  exit 1
+fi
+
+exec "$BIN" "$@"
