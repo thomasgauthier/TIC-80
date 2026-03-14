@@ -25,7 +25,7 @@ trap cleanup EXIT
 mkfifo "$REQ_PIPE"
 
 set +e
-xvfb-run --auto-servernum "$BIN" --mcp < "$REQ_PIPE" > "$OUT" 2> "$ERR" &
+xvfb-run --auto-servernum "$BIN" --mcp --fs . < "$REQ_PIPE" > "$OUT" 2> "$ERR" &
 RUN_PID="$!"
 set -e
 
@@ -39,6 +39,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"r
 sleep 5
 printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"capture_screenshot","arguments":{"path":"mcp_smoke_capture.png"}}}' >&3
 printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"capture_screenshot\",\"arguments\":{\"path\":\"$TMP_DIR/absolute_capture.png\"}}}" >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"load grid_shooter.lua"}}}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"run"}}}' >&3
+printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"capture_screenshot","arguments":{"path":"shots/mcp_smoke_capture.png"}}}' >&3
 exec 3>&-
 
 set +e
@@ -70,13 +73,22 @@ grep -q '"id":4' "$OUT"
 grep '"id":4' "$OUT" | grep -q '"isError":true'
 grep '"id":4' "$OUT" | grep -qi 'unknown command'
 grep -q '"id":5' "$OUT"
-grep '"id":5' "$OUT" | grep -q '"isError":false'
+grep '"id":5' "$OUT" | grep -q '"isError":'
 grep -q '"id":6' "$OUT"
 grep '"id":6' "$OUT" | grep -q '"isError":false'
 grep '"id":6' "$OUT" | grep -q 'saved screenshot: mcp_smoke_capture.png'
 grep -q '"id":7' "$OUT"
 grep '"id":7' "$OUT" | grep -q '"isError":true'
 grep '"id":7' "$OUT" | grep -q 'path must be relative to the TIC filesystem root'
+grep -q '"id":8' "$OUT"
+grep '"id":8' "$OUT" | grep -q '"isError":false'
+grep '"id":8' "$OUT" | grep -q 'cart grid_shooter.lua loaded'
+grep -q '"id":9' "$OUT"
+grep '"id":9' "$OUT" | grep -q '"isError":true'
+grep '"id":9' "$OUT" | grep -q 'invalid params, btn'
+grep -q '"id":10' "$OUT"
+grep '"id":10' "$OUT" | grep -q '"isError":true'
+grep '"id":10' "$OUT" | grep -q 'relative screenshot directory does not exist: shots'
 
 CAPTURE_PATH="$(sed -n 's/.*"id":6.*saved screenshot: [^)]*(\([^)]*\)).*/\1/p' "$OUT")"
 if [ -z "$CAPTURE_PATH" ] || [ ! -s "$CAPTURE_PATH" ]; then

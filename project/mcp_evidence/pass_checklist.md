@@ -19,7 +19,9 @@ Source spec: `project/mcp_feature.md`
 - Success: `tools/call` with `run_command` and `help commands` returns `isError:false` and textual command output.
 - Failure: `tools/call` with invalid command returns `isError:true` and `unknown command` text.
 - MCP-triggered command/runtime error: `tools/call` with `run_command` and `eval error("mcp eval boom")` returns `isError:true`, and a later screenshot remains on the prior active view.
+- `run_command` first-frame error: `tools/call` with `run_command` and `run` against `grid_shooter.lua` returns `isError:true` and the synchronous `invalid params, btn [ id ]` runtime error text.
 - Screenshot path contract: `tools/call` with `capture_screenshot` and an absolute host path returns `isError:true` with a relative-path contract error.
+- Screenshot nested relative path: `tools/call` with `capture_screenshot` and `shots/mcp_capture_2.png` returns `isError:true` with a specific missing-directory error.
 - Unsupported: `tools/call` with `run_command` and `folder` returns `isError:true` and an MCP-safe unsupported-command error.
 <!-- Historical note: this `folder` expectation reflects an earlier spec revision and is kept for archival context. -->
 <!-- Current spec direction is console-command parity via MCP. -->
@@ -39,6 +41,8 @@ Source spec: `project/mcp_feature.md`
 ## 7. Automated tests
 - Test script: `tools/mcp/stdio_smoke.sh`
 - Includes success and failure checks for `run_command`.
+- Includes synchronous `run_command("run")` runtime-error surfacing check via `grid_shooter.lua`.
+- Includes missing relative screenshot directory error check.
 - Smoke run log: `project/mcp_evidence/stdio_smoke.log`
 - Playtest smoke script: `tools/mcp/playtest_episode_smoke.sh`
 - Playtest regression script: `tools/mcp/playtest_episode_regression.sh`

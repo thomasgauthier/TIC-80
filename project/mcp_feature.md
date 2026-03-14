@@ -38,6 +38,7 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - Returns command output text in MCP content format.
   - If execution fails, returns `isError: true` with useful error text.
   - If a command-triggered script/runtime error happens synchronously during the `run_command` tool call in `--mcp` mode, the error is returned in MCP output and logged to console history without forcing the visible studio mode away from the currently active view.
+  - This includes `run_command("run")` when the first run-mode frame fails synchronously during runtime initialization.
 
 ### Tool Name: `capture_screenshot`
 - Input schema:
@@ -49,6 +50,7 @@ Implement an MCP server mode inside TIC-80 that communicates over stdio using JS
   - If `path` is provided, it must be relative to the active TIC filesystem root.
   - If `path` has no `.png` extension, `.png` is appended.
   - Absolute host paths and escaping paths are rejected with `isError: true`.
+  - If `path` targets a relative subdirectory that does not exist, returns `isError: true` with a specific missing-directory error.
   - Returns MCP text content describing saved relative path and resolved absolute path.
   - Returns `isError: true` with useful text when capture/encode/save fails.
 
@@ -104,9 +106,11 @@ Feature is **PASSED** only when all items below are true:
    - `tools/call` for `run_command` executes a valid TIC-80 command and returns output.
    - Invalid command returns structured error (`isError: true`).
    - MCP-triggered command/runtime errors (for example `eval error("boom")`) return structured error (`isError: true`) without forcing subsequent screenshots away from the previously active view.
+   - `run_command("run")` returns structured error (`isError: true`) when the first run-mode frame fails synchronously.
    - `tools/call` for `capture_screenshot` saves PNG output and returns saved path text (`isError: false`).
    - `capture_screenshot` without `path` writes deterministic default path `mcp_capture.png`.
    - `capture_screenshot` rejects absolute or escaping paths with structured error (`isError: true`).
+   - `capture_screenshot` with a missing relative subdirectory returns a specific missing-directory error.
    - `tools/call` for `run_playtest_episode` executes a one-frame playtest script and returns `isError: false` with status, message, frame count, and artifact path text.
    - `run_playtest_episode` writes `script.lua`, `log.txt`, `console.txt`, and per-frame screenshots under `./playtest/episode_n/`.
    - `run_playtest_episode` supports one-frame input injection for player 1 by default.
@@ -139,6 +143,8 @@ Feature is **PASSED** only when all items below are true:
   - `tools/mcp/playtest_episode_regression.sh ./build/bin/tic80`
 - Test must include `run_command("run")`, a 5-second wait, and `capture_screenshot` with artifact validation.
 - Add/extend coverage for `run_command` success/failure and `capture_screenshot` success.
+- Add/extend coverage proving `run_command("run")` surfaces synchronous first-frame runtime errors back to the MCP caller.
+- Add/extend coverage proving `capture_screenshot` reports missing relative subdirectories with a specific error message.
 - Add/extend automated coverage for MCP-triggered command errors using a stable Lua text-project fixture with explicit cart data sections.
 - Add/extend automated coverage for spontaneous cart/runtime errors using the same stable fixture and verify that a later screenshot changes after the delayed cart error.
   - Add automated coverage for `run_playtest_episode` using a small deterministic Lua fixture that proves:

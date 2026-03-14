@@ -4617,6 +4617,34 @@ static bool isMcpScreenshotEscapingPath(const char* path)
     return false;
 }
 
+static bool copyMcpScreenshotParentDir(const char* path, char* dir, size_t size)
+{
+    if(dir == NULL || size == 0)
+        return false;
+
+    dir[0] = '\0';
+
+    if(path == NULL || *path == '\0')
+        return false;
+
+    const char* slash = strrchr(path, '/');
+    const char* backslash = strrchr(path, '\\');
+    const char* end = slash > backslash ? slash : backslash;
+
+    if(end == NULL)
+        return false;
+
+    const size_t len = (size_t)(end - path);
+
+    if(len == 0 || len >= size)
+        return false;
+
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+
+    return true;
+}
+
 char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError)
 {
     if(isError)
@@ -4642,6 +4670,20 @@ char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isEr
     }
     else if(strlen(requested) >= sizeof filename)
         return strdup("screenshot path is too long");
+
+    char parentDir[TICNAME_MAX];
+    if(copyMcpScreenshotParentDir(out, parentDir, sizeof parentDir)
+        && !tic_fs_exists(console->fs, parentDir))
+    {
+        const size_t size = strlen(parentDir) + 48;
+        char* result = calloc(1, size);
+
+        if(result == NULL)
+            return strdup("relative screenshot directory does not exist");
+
+        snprintf(result, size, "relative screenshot directory does not exist: %s", parentDir);
+        return result;
+    }
 
     png_img img = {TIC80_WIDTH, TIC80_HEIGHT, malloc(TIC80_WIDTH * TIC80_HEIGHT * sizeof(png_rgba))};
 
@@ -4889,6 +4931,13 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     }
 
     processCommand(console, command);
+
+    if(!console->mcp.command.errorOccurred
+        && core
+        && getStudioMode(console->studio) == TIC_RUN_MODE
+        && (strcmp(commandName, "run") == 0 || strcmp(commandName, "resume") == 0)
+        && !core->state.initialized)
+        studio_tick(console->studio, (tic80_input){0});
 
     fflush(stream);
     fseek(stream, 0, SEEK_END);
