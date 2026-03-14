@@ -1,0 +1,4 @@
+interface:
+  display_name: "TIC-80 CLI Shim"
+  short_description: "Operate TIC-80 through the tic80ctl CLI for long-lived sessions, console commands, screenshots, and playtest episodes"
+  default_prompt: "Use $tic80ctl-usage to manage a tic80ctl session, load carts, run console commands, capture screenshots, and drive scripted gameplay episodes through the command-oriented TIC-80 CLI."
