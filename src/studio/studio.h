@@ -277,6 +277,16 @@ tic_tiles* getBankTiles(Studio* studio);
 tic_palette* getBankPalette(Studio* studio, bool bank);
 tic_flags* getBankFlags(Studio* studio);
 tic_map* getBankMap(Studio* studio);
+tic_sfx* getBankSfxData(Studio* studio, s32 bank);
+tic_music* getBankMusicData(Studio* studio, s32 bank);
+tic_tiles* getBankTilesData(Studio* studio, s32 bank);
+tic_map* getBankMapData(Studio* studio, s32 bank);
+tic_palette* getBankPaletteData(Studio* studio, s32 bank, bool vbank);
+void studioSyncSfxBank(Studio* studio, s32 bank);
+void studioSyncMusicBank(Studio* studio, s32 bank);
+void studioSyncTilesBank(Studio* studio, s32 bank);
+void studioSyncMapBank(Studio* studio, s32 bank);
+void studioSyncPaletteBank(Studio* studio, s32 bank, bool vbank);
 
 char getKeyboardText(Studio* studio);
 bool keyWasPressed(Studio* studio, tic_key key);

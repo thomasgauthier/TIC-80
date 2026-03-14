@@ -111,6 +111,105 @@ typedef struct
     s32 methodToken;
 } McpRequest;
 
+typedef struct
+{
+    char* data;
+    size_t len;
+    size_t cap;
+} McpSb;
+
+static void sbInit(McpSb* sb)
+{
+    memset(sb, 0, sizeof(*sb));
+}
+
+static void sbFree(McpSb* sb)
+{
+    free(sb->data);
+}
+
+static bool sbReserve(McpSb* sb, size_t extra)
+{
+    size_t need = sb->len + extra + 1;
+    if(need <= sb->cap) return true;
+
+    size_t cap = sb->cap ? sb->cap : 256;
+    while(cap < need) cap *= 2;
+
+    char* data = realloc(sb->data, cap);
+    if(data == NULL) return false;
+
+    sb->data = data;
+    sb->cap = cap;
+    return true;
+}
+
+static bool sbAppendN(McpSb* sb, const char* text, size_t len)
+{
+    if(!sbReserve(sb, len)) return false;
+    memcpy(sb->data + sb->len, text, len);
+    sb->len += len;
+    sb->data[sb->len] = '\0';
+    return true;
+}
+
+static bool sbAppend(McpSb* sb, const char* text)
+{
+    return sbAppendN(sb, text, strlen(text));
+}
+
+static bool sbAppendf(McpSb* sb, const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    va_list copy;
+    va_copy(copy, args);
+    int needed = vsnprintf(NULL, 0, fmt, copy);
+    va_end(copy);
+    if(needed < 0)
+    {
+        va_end(args);
+        return false;
+    }
+
+    if(!sbReserve(sb, (size_t)needed))
+    {
+        va_end(args);
+        return false;
+    }
+
+    vsnprintf(sb->data + sb->len, sb->cap - sb->len, fmt, args);
+    va_end(args);
+    sb->len += (size_t)needed;
+    return true;
+}
+
+static bool sbAppendJsonString(McpSb* sb, const char* text)
+{
+    if(!sbAppend(sb, "\"")) return false;
+
+    for(const unsigned char* it = (const unsigned char*)(text ? text : ""); *it; it++)
+    {
+        switch(*it)
+        {
+        case '\\': if(!sbAppend(sb, "\\\\")) return false; break;
+        case '"': if(!sbAppend(sb, "\\\"")) return false; break;
+        case '\n': if(!sbAppend(sb, "\\n")) return false; break;
+        case '\r': if(!sbAppend(sb, "\\r")) return false; break;
+        case '\t': if(!sbAppend(sb, "\\t")) return false; break;
+        default:
+            if(*it < 0x20)
+            {
+                if(!sbAppendf(sb, "\\u%04x", *it)) return false;
+            }
+            else if(!sbAppendN(sb, (const char*)it, 1)) return false;
+            break;
+        }
+    }
+
+    return sbAppend(sb, "\"");
+}
+
 static bool mcpTokenEq(const char* json, const jsmntok_t* tok, const char* value)
 {
     s32 len = (s32)strlen(value);
@@ -128,6 +227,18 @@ static bool mcpCopyTokenRaw(const char* json, const jsmntok_t* tok, char* dst, s
     memcpy(dst, json + tok->start, len);
     dst[len] = '\0';
     return true;
+}
+
+static char* mcpDupTokenRaw(const char* json, const jsmntok_t* tok)
+{
+    s32 len = tok->end - tok->start;
+    if(len < 0) return NULL;
+
+    char* dst = calloc((size_t)len + 1, 1);
+    if(dst == NULL) return NULL;
+
+    memcpy(dst, json + tok->start, (size_t)len);
+    return dst;
 }
 
 static bool mcpCopyTokenString(const char* json, const jsmntok_t* tok, char* dst, size_t size)
@@ -408,6 +519,68 @@ typedef enum
     McpToolRunPlaytestEpisode,
 } McpToolKind;
 
+static void writeToolsListResult(const char* idJson)
+{
+    char* editorTools = studio_editor_tools_json_mcp();
+    if(editorTools == NULL)
+    {
+        writeMcpError(idJson, -32000, "Internal error");
+        return;
+    }
+
+    McpSb sb;
+    sbInit(&sb);
+    sbAppend(&sb, "{\"tools\":[");
+    sbAppend(&sb, "{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},");
+    sbAppend(&sb, "{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG. If provided, path will be interpreted relative to the active TIC filesystem root (`./`); omit it to use mcp_capture.png.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}},");
+    sbAppend(&sb, "{\"name\":\"run_playtest_episode\",\"description\":\"Run a scripted playtest episode against the currently loaded cart and write artifacts under ./playtest/episode_n.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\"},\"timeout_seconds\":{\"type\":\"integer\"},\"input_overlay\":{\"type\":\"boolean\"}},\"required\":[\"script\"],\"additionalProperties\":false}}");
+    if(editorTools[0] == '[' && editorTools[1] != ']')
+    {
+        sbAppend(&sb, ",");
+        sbAppendN(&sb, editorTools + 1, strlen(editorTools) - 2);
+    }
+    sbAppend(&sb, "]}");
+    writeMcpResult(idJson, sb.data);
+    sbFree(&sb);
+    free(editorTools);
+}
+
+static void writeMcpToolResult(const char* idJson, const char* text, bool isError, const char* structuredContentJson)
+{
+    char* escaped = mcpEscapeJsonString(text ? text : "");
+    if(escaped == NULL)
+    {
+        writeMcpError(idJson, -32000, "Internal error");
+        return;
+    }
+
+    size_t resultSize = strlen(escaped) + (structuredContentJson ? strlen(structuredContentJson) : 0) + 192;
+    char* result = malloc(resultSize);
+
+    if(result == NULL)
+    {
+        free(escaped);
+        writeMcpError(idJson, -32000, "Internal error");
+        return;
+    }
+
+    if(structuredContentJson)
+        snprintf(result, resultSize,
+                 "{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}],\"structuredContent\":%s,\"isError\":%s}",
+                 escaped,
+                 structuredContentJson,
+                 isError ? "true" : "false");
+    else
+        snprintf(result, resultSize,
+                 "{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}],\"isError\":%s}",
+                 escaped,
+                 isError ? "true" : "false");
+
+    writeMcpResult(idJson, result);
+    free(result);
+    free(escaped);
+}
+
 static bool runMcpTool(Studio* studio, SDL_mutex* mutex, McpToolKind tool, const char* commandText, const char* screenshotPath, s32 timeoutSeconds, bool inputOverlay, bool* isError, char** output)
 {
     if(mutex)
@@ -525,7 +698,7 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
         if(strcmp(method, "tools/list") == 0)
         {
             if(request.hasId)
-                writeMcpResult(idJson, "{\"tools\":[{\"name\":\"run_command\",\"description\":\"Run a TIC-80 console command.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}},{\"name\":\"capture_screenshot\",\"description\":\"Capture the live TIC-80 framebuffer and save it as PNG. If provided, path will be interpreted relative to the active TIC filesystem root (`./`); omit it to use mcp_capture.png.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"additionalProperties\":false}},{\"name\":\"run_playtest_episode\",\"description\":\"Run a scripted playtest episode against the currently loaded cart and write artifacts under ./playtest/episode_n.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"script\":{\"type\":\"string\"},\"timeout_seconds\":{\"type\":\"integer\"},\"input_overlay\":{\"type\":\"boolean\"}},\"required\":[\"script\"],\"additionalProperties\":false}}]}");
+                writeToolsListResult(idJson);
 
             freeMcpRequest(&request);
             continue;
@@ -558,8 +731,21 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
             bool runCommand = mcpTokenEq(request.json, &request.tokens[name], "run_command");
             bool captureScreenshot = mcpTokenEq(request.json, &request.tokens[name], "capture_screenshot");
             bool runPlaytestEpisode = mcpTokenEq(request.json, &request.tokens[name], "run_playtest_episode");
+            char toolName[128];
 
-            if(!runCommand && !captureScreenshot && !runPlaytestEpisode)
+            if(!runCommand && !captureScreenshot && !runPlaytestEpisode
+                && !mcpCopyTokenString(request.json, &request.tokens[name], toolName, sizeof toolName))
+            {
+                writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            if(!runCommand && !captureScreenshot && !runPlaytestEpisode
+                && strncmp(toolName, "sfx_", 4) != 0
+                && strncmp(toolName, "music_", 6) != 0
+                && strncmp(toolName, "sprite_", 7) != 0
+                && strncmp(toolName, "map_", 4) != 0)
             {
                 writeMcpResult(idJson, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
                 freeMcpRequest(&request);
@@ -570,6 +756,47 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
             if(arguments >= 0 && request.tokens[arguments].type != JSMN_OBJECT)
             {
                 writeMcpError(idJson, -32602, "Invalid params");
+                freeMcpRequest(&request);
+                continue;
+            }
+
+            if(!runCommand && !captureScreenshot && !runPlaytestEpisode)
+            {
+                bool isError = true;
+                bool structured = false;
+                char* output = NULL;
+                char* argsJson = NULL;
+
+                if(arguments >= 0)
+                    argsJson = mcpDupTokenRaw(request.json, &request.tokens[arguments]);
+                else
+                    argsJson = strdup("{}");
+
+                if(argsJson == NULL)
+                {
+                    writeMcpError(idJson, -32000, "Internal error");
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                if(!studio_handle_editor_tool_mcp(studio, toolName, argsJson, &isError, &structured, &output))
+                {
+                    writeMcpResult(idJson, "{\"content\":[{\"type\":\"text\",\"text\":\"unknown tool\"}],\"isError\":true}");
+                    free(argsJson);
+                    free(output);
+                    freeMcpRequest(&request);
+                    continue;
+                }
+
+                if(output == NULL)
+                {
+                    writeMcpError(idJson, -32602, "Invalid params");
+                }
+                else
+                    writeMcpResult(idJson, output);
+
+                free(argsJson);
+                free(output);
                 freeMcpRequest(&request);
                 continue;
             }
@@ -676,33 +903,7 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
 
                 runMcpTool(studio, mutex, McpToolRunPlaytestEpisode, scriptText, NULL, timeoutSeconds, inputOverlay, &isError, &output);
             }
-            char* escaped = mcpEscapeJsonString(output ? output : "");
-
-            if(escaped == NULL)
-            {
-                free(output);
-                writeMcpError(idJson, -32000, "Internal error");
-                freeMcpRequest(&request);
-                continue;
-            }
-
-            const size_t resultSize = strlen(escaped) + 128;
-            char* result = malloc(resultSize);
-
-            if(result == NULL)
-            {
-                free(escaped);
-                free(output);
-                writeMcpError(idJson, -32000, "Internal error");
-                freeMcpRequest(&request);
-                continue;
-            }
-
-            snprintf(result, resultSize, "{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}],\"isError\":%s}", escaped, isError ? "true" : "false");
-            writeMcpResult(idJson, result);
-
-            free(result);
-            free(escaped);
+            writeMcpToolResult(idJson, output ? output : "", isError, NULL);
             free(output);
 
             freeMcpRequest(&request);

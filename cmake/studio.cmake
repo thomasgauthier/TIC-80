@@ -9,6 +9,10 @@ set(TIC80STUDIO_SRC
     ${TIC80LIB_DIR}/studio/screens/mainmenu.c
     ${TIC80LIB_DIR}/studio/screens/start.c
     ${TIC80LIB_DIR}/studio/studio.c
+    ${TIC80LIB_DIR}/studio/mcp_editor.c
+    ${TIC80LIB_DIR}/studio/mcp_sfx.c
+    ${TIC80LIB_DIR}/studio/mcp_music.c
+    ${TIC80LIB_DIR}/studio/mcp_visual.c
     ${TIC80LIB_DIR}/studio/config.c
     ${TIC80LIB_DIR}/studio/fs.c
     ${TIC80LIB_DIR}/ext/md5.c

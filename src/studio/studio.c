@@ -36,6 +36,7 @@
 #include "editors/world.h"
 #include "editors/sfx.h"
 #include "editors/music.h"
+#include "mcp_editor.h"
 #include "screens/console.h"
 #include "screens/surf.h"
 #include "ext/history.h"
@@ -2617,6 +2618,235 @@ char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 ti
         *isError = true;
 
     return strdup("mcp playtest episode runner unavailable");
+}
+
+char* studio_editor_tools_json_mcp(void)
+{
+#if defined(BUILD_EDITORS)
+    return mcp_editor_tools_json();
+#else
+    return strdup("[]");
+#endif
+}
+
+bool studio_handle_editor_tool_mcp(Studio* studio, const char* toolName, const char* argsJson, bool* isError, bool* structuredOutput, char** output)
+{
+#if defined(BUILD_EDITORS)
+    if(studio != NULL && output != NULL)
+    {
+        bool handled = false;
+        bool invalidParams = false;
+        char* result = mcp_editor_call_tool(studio, toolName, argsJson, &invalidParams, &handled);
+
+        if(handled)
+        {
+            *output = result;
+            if(isError) *isError = result != NULL && strstr(result, "\"isError\":true") != NULL;
+            if(structuredOutput) *structuredOutput = result != NULL && strstr(result, "\"structuredContent\"") != NULL;
+            return true;
+        }
+
+        TIC_UNUSED(invalidParams);
+        free(result);
+    }
+#else
+    (void)studio;
+    (void)toolName;
+    (void)argsJson;
+    (void)isError;
+    (void)structuredOutput;
+    (void)output;
+#endif
+
+    if(isError) *isError = true;
+    if(structuredOutput) *structuredOutput = false;
+    if(output) *output = NULL;
+    return false;
+}
+
+tic_sfx* studio_sfx(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    return studio ? &studio->tic->cart.banks[studio->bank.index.sfx].sfx : NULL;
+#else
+    return NULL;
+#endif
+}
+
+tic_sfx* getBankSfxData(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || bank < 0 || bank >= TIC_BANKS) return NULL;
+    return &studio->tic->cart.banks[bank].sfx;
+#else
+    return NULL;
+#endif
+}
+
+tic_music* studio_music(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    return studio ? &studio->tic->cart.banks[studio->bank.index.music].music : NULL;
+#else
+    return NULL;
+#endif
+}
+
+tic_music* getBankMusicData(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || bank < 0 || bank >= TIC_BANKS) return NULL;
+    return &studio->tic->cart.banks[bank].music;
+#else
+    return NULL;
+#endif
+}
+
+tic_tiles* studio_tiles(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    return studio ? &studio->tic->cart.banks[studio->bank.index.sprites].tiles : NULL;
+#else
+    return NULL;
+#endif
+}
+
+tic_tiles* getBankTilesData(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || bank < 0 || bank >= TIC_BANKS) return NULL;
+    return &studio->tic->cart.banks[bank].tiles;
+#else
+    return NULL;
+#endif
+}
+
+tic_map* studio_map(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    return studio ? &studio->tic->cart.banks[studio->bank.index.map].map : NULL;
+#else
+    return NULL;
+#endif
+}
+
+tic_map* getBankMapData(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || bank < 0 || bank >= TIC_BANKS) return NULL;
+    return &studio->tic->cart.banks[bank].map;
+#else
+    return NULL;
+#endif
+}
+
+tic_palette* studio_palette(Studio* studio, bool vbank1)
+{
+#if defined(BUILD_EDITORS)
+    if(!studio) return NULL;
+    tic_bank* bank = &studio->tic->cart.banks[studio->bank.index.sprites];
+    return vbank1 ? &bank->palette.vbank1 : &bank->palette.vbank0;
+#else
+    return NULL;
+#endif
+}
+
+tic_palette* getBankPaletteData(Studio* studio, s32 bank, bool vbank1)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL || bank < 0 || bank >= TIC_BANKS) return NULL;
+    tic_bank* cartBank = &studio->tic->cart.banks[bank];
+    return vbank1 ? &cartBank->palette.vbank1 : &cartBank->palette.vbank0;
+#else
+    return NULL;
+#endif
+}
+
+void studio_sync_sfx(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    memcpy(&studio->tic->ram->sfx, studio_sfx(studio), sizeof(tic_sfx));
+#endif
+}
+
+void studioSyncSfxBank(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    if(bank == studio->bank.index.sfx)
+        memcpy(&studio->tic->ram->sfx, getBankSfxData(studio, bank), sizeof(tic_sfx));
+#endif
+}
+
+void studio_sync_music(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    memcpy(&studio->tic->ram->music, studio_music(studio), sizeof(tic_music));
+#endif
+}
+
+void studioSyncMusicBank(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    if(bank == studio->bank.index.music)
+        memcpy(&studio->tic->ram->music, getBankMusicData(studio, bank), sizeof(tic_music));
+#endif
+}
+
+void studio_sync_tiles(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    tiles2ram(studio->tic->ram, studio_tiles(studio));
+#endif
+}
+
+void studioSyncTilesBank(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    if(bank == studio->bank.index.sprites)
+        tiles2ram(studio->tic->ram, getBankTilesData(studio, bank));
+#endif
+}
+
+void studio_sync_map(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    map2ram(studio->tic->ram, studio_map(studio));
+#endif
+}
+
+void studioSyncMapBank(Studio* studio, s32 bank)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    if(bank == studio->bank.index.map)
+        map2ram(studio->tic->ram, getBankMapData(studio, bank));
+#endif
+}
+
+void studio_sync_palette(Studio* studio, bool vbank1)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    memcpy(vbank1 ? &studio->tic->ram->vram.palette : &studio->tic->ram->vram.palette,
+           studio_palette(studio, vbank1),
+           sizeof(tic_palette));
+#endif
+}
+
+void studioSyncPaletteBank(Studio* studio, s32 bank, bool vbank1)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL) return;
+    if(bank == studio->bank.index.sprites)
+        memcpy(&studio->tic->ram->vram.palette, getBankPaletteData(studio, bank, vbank1), sizeof(tic_palette));
+#endif
 }
 
 bool studio_playtest_set_gamepad(Studio* studio, s32 player, tic80_gamepad gamepad)

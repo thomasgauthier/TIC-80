@@ -173,6 +173,18 @@ const StudioConfig* studio_config(Studio* studio);
 char* studio_run_command_mcp(Studio* studio, const char* command, bool* isError);
 char* studio_capture_screenshot_mcp(Studio* studio, const char* path, bool* isError);
 char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError);
+char* studio_editor_tools_json_mcp(void);
+bool studio_handle_editor_tool_mcp(Studio* studio, const char* toolName, const char* argsJson, bool* isError, bool* structuredOutput, char** output);
+tic_sfx* studio_sfx(Studio* studio);
+tic_music* studio_music(Studio* studio);
+tic_tiles* studio_tiles(Studio* studio);
+tic_map* studio_map(Studio* studio);
+tic_palette* studio_palette(Studio* studio, bool vbank1);
+void studio_sync_sfx(Studio* studio);
+void studio_sync_music(Studio* studio);
+void studio_sync_tiles(Studio* studio);
+void studio_sync_map(Studio* studio);
+void studio_sync_palette(Studio* studio, bool vbank1);
 bool studio_playtest_set_gamepad(Studio* studio, s32 player, tic80_gamepad gamepad);
 bool studio_playtest_frame_advance(Studio* studio);
 
