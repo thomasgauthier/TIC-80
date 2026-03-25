@@ -35,6 +35,17 @@ typedef enum
 
 typedef struct Console Console;
 typedef struct CommandDesc CommandDesc;
+typedef struct RunCommandMcpResult RunCommandMcpResult;
+
+struct RunCommandMcpResult
+{
+    char command[TICNAME_MAX];
+    bool recognized;
+    EditorMode modeBefore;
+    EditorMode modeAfter;
+    bool coreInitializedAfter;
+    char errorKind[64];
+};
 
 struct Console
 {
@@ -157,6 +168,7 @@ struct Console
 void initConsole(Console*, Studio* studio, struct tic_fs* fs, struct tic_net* net, struct Config* config, StartArgs args);
 void freeConsole(Console* console);
 void forceAutoSave(Console* console, const char* cart_name);
+const RunCommandMcpResult* consoleGetRunCommandMcpResult(void);
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError);
 char* consoleCaptureScreenshotMcp(Console* console, const char* path, bool* isError);
 char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 timeoutSeconds, bool inputOverlay, bool* isError);

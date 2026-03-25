@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "studio/system.h"
+#include "studio/screens/console.h"
 #include "tools.h"
 
 #include "ext/fft.h"
@@ -208,6 +209,50 @@ static bool sbAppendJsonString(McpSb* sb, const char* text)
     }
 
     return sbAppend(sb, "\"");
+}
+
+static const char* runCommandModeName(EditorMode mode)
+{
+    switch(mode)
+    {
+    case TIC_START_MODE: return "start";
+    case TIC_CONSOLE_MODE: return "console";
+    case TIC_RUN_MODE: return "run";
+    case TIC_CODE_MODE: return "code";
+    case TIC_SPRITE_MODE: return "sprite";
+    case TIC_MAP_MODE: return "map";
+    case TIC_WORLD_MODE: return "world";
+    case TIC_SFX_MODE: return "sfx";
+    case TIC_MUSIC_MODE: return "music";
+    case TIC_MENU_MODE: return "menu";
+    case TIC_SURF_MODE: return "surf";
+    default: return "unknown";
+    }
+}
+
+static char* buildRunCommandStructuredContentJson(const RunCommandMcpResult* result, const char* text)
+{
+    if(result == NULL)
+        return NULL;
+
+    McpSb sb;
+    sbInit(&sb);
+
+    if(!sbAppend(&sb, "{")
+        || !sbAppend(&sb, "\"command\":") || !sbAppendJsonString(&sb, result->command)
+        || !sbAppend(&sb, ",\"recognized\":") || !sbAppend(&sb, result->recognized ? "true" : "false")
+        || !sbAppend(&sb, ",\"mode_before\":") || !sbAppendJsonString(&sb, runCommandModeName(result->modeBefore))
+        || !sbAppend(&sb, ",\"mode_after\":") || !sbAppendJsonString(&sb, runCommandModeName(result->modeAfter))
+        || !sbAppend(&sb, ",\"core_initialized_after\":") || !sbAppend(&sb, result->coreInitializedAfter ? "true" : "false")
+        || !sbAppend(&sb, ",\"error_kind\":") || !sbAppendJsonString(&sb, result->errorKind)
+        || !sbAppend(&sb, ",\"text\":") || !sbAppendJsonString(&sb, text ? text : "")
+        || !sbAppend(&sb, "}"))
+    {
+        sbFree(&sb);
+        return NULL;
+    }
+
+    return sb.data;
 }
 
 static bool mcpTokenEq(const char* json, const jsmntok_t* tok, const char* value)
@@ -903,7 +948,13 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
 
                 runMcpTool(studio, mutex, McpToolRunPlaytestEpisode, scriptText, NULL, timeoutSeconds, inputOverlay, &isError, &output);
             }
-            writeMcpToolResult(idJson, output ? output : "", isError, NULL);
+
+            char* structuredContent = NULL;
+            if(runCommand)
+                structuredContent = buildRunCommandStructuredContentJson(consoleGetRunCommandMcpResult(), output ? output : "");
+
+            writeMcpToolResult(idJson, output ? output : "", isError, structuredContent);
+            free(structuredContent);
             free(output);
 
             freeMcpRequest(&request);
@@ -1186,7 +1237,7 @@ static const u8* getSpritePtr(const tic_tile* tiles, s32 x, s32 y)
     return tiles[x / TIC_SPRITESIZE + y / TIC_SPRITESIZE * SheetCols].data;
 }
 
-static u8 getSpritePixel(const tic_tile* tiles, s32 x, s32 y)
+static u8 getWindowIconSpritePixel(const tic_tile* tiles, s32 x, s32 y)
 {
     return tic_tool_peek4(getSpritePtr(tiles, x, y), (x % TIC_SPRITESIZE) + (y % TIC_SPRITESIZE) * TIC_SPRITESIZE);
 }
@@ -1203,7 +1254,7 @@ static void setWindowIcon()
         for(s32 j = 0, index = 0; j < Size; j++)
             for(s32 i = 0; i < Size; i++, index++)
             {
-                u8 color = getSpritePixel(studio_config(platform.studio)->cart->bank0.tiles.data, i/Scale, j/Scale);
+                u8 color = getWindowIconSpritePixel(studio_config(platform.studio)->cart->bank0.tiles.data, i/Scale, j/Scale);
                 pixels[index] = color == ColorKey ? 0 : pal.data[color];
             }
 

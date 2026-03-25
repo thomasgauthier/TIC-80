@@ -59,6 +59,9 @@ typedef struct
     char tic80_bin[PATH_MAX];
     char launch_command[4096];
     char token[65];
+    char last_command[64];
+    char last_load_target[PATH_MAX];
+    char last_stderr_tail[1024];
     int listen_fd;
     pid_t child_pid;
     int child_stdin_fd;
@@ -75,12 +78,15 @@ typedef struct
     bool ok;
     bool running;
     long pid;
+    char verb[64];
     char mode[64];
     char cwd[PATH_MAX];
     char bin[PATH_MAX];
     char stdout_path[PATH_MAX];
     char stderr_path[PATH_MAX];
     char error[1024];
+    char last_load_target[PATH_MAX];
+    char stderr_tail[1024];
     char mcp_raw[262144];
     bool has_mcp_raw;
     bool is_error;
@@ -418,6 +424,40 @@ static char* last_nonempty_line(const char* path)
     return last;
 }
 
+static void copy_last_nonempty_line(const char* path, char* out, size_t out_size)
+{
+    char* last = last_nonempty_line(path);
+    if(last)
+    {
+        snprintf(out, out_size, "%s", last);
+        free(last);
+    }
+    else if(out_size > 0)
+    {
+        out[0] = '\0';
+    }
+}
+
+static const char* skip_ws(const char* s);
+
+static void parse_command_text(const char* text, char* verb, size_t verb_size, const char** rest_out)
+{
+    const char* start = text ? skip_ws(text) : "";
+    size_t len = 0;
+    while(start[len] && !isspace((unsigned char)start[len]))
+        len++;
+
+    if(verb_size > 0)
+    {
+        size_t copy = len < verb_size - 1 ? len : verb_size - 1;
+        memcpy(verb, start, copy);
+        verb[copy] = '\0';
+    }
+
+    if(rest_out)
+        *rest_out = skip_ws(start + len);
+}
+
 static bool random_hex_token(char* out, size_t out_size)
 {
     if(out_size < 65) return false;
@@ -457,12 +497,17 @@ static const char* find_json_key(const char* json, const char* key)
 {
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char* p = strstr(json, pattern);
-    if(!p) return NULL;
-    p += strlen(pattern);
-    p = skip_ws(p);
-    if(*p != ':') return NULL;
-    return skip_ws(p + 1);
+    const char* p = json;
+
+    while((p = strstr(p, pattern)) != NULL)
+    {
+        const char* after = skip_ws(p + strlen(pattern));
+        if(*after == ':')
+            return skip_ws(after + 1);
+        p += strlen(pattern);
+    }
+
+    return NULL;
 }
 
 static char* parse_json_string_value(const char* start, const char** end_out)
@@ -571,6 +616,69 @@ static bool json_get_long(const char* json, const char* key, long* out)
     long value = strtol(p, &end, 10);
     if(errno != 0 || end == p) return false;
     *out = value;
+    return true;
+}
+
+static bool json_get_raw_value(const char* json, const char* key, char* out, size_t out_size)
+{
+    const char* p = find_json_key(json, key);
+    if(!p) return false;
+
+    const char* start = p;
+    const char* end = p;
+    if(*p == '"')
+    {
+        char* value = parse_json_string_value(p, &end);
+        if(!value) return false;
+        bool ok = snprintf(out, out_size, "%s", value) < (int)out_size;
+        free(value);
+        return ok;
+    }
+
+    if(*p == '{' || *p == '[')
+    {
+        int depth = 0;
+        bool in_string = false;
+        bool escape = false;
+        for(; *end; end++)
+        {
+            char c = *end;
+            if(in_string)
+            {
+                if(escape) escape = false;
+                else if(c == '\\') escape = true;
+                else if(c == '"') in_string = false;
+                continue;
+            }
+
+            if(c == '"')
+            {
+                in_string = true;
+                continue;
+            }
+
+            if(c == '{' || c == '[') depth++;
+            else if(c == '}' || c == ']')
+            {
+                depth--;
+                if(depth == 0)
+                {
+                    end++;
+                    break;
+                }
+            }
+        }
+    }
+    else
+    {
+        while(*end && *end != ',' && *end != '}') end++;
+    }
+
+    if(end <= start) return false;
+    size_t len = (size_t)(end - start);
+    if(len >= out_size) return false;
+    memcpy(out, start, len);
+    out[len] = '\0';
     return true;
 }
 
@@ -1020,19 +1128,43 @@ static bool handle_tool_request(Server* server, FILE* io, const char* tool_name,
         return true;
     }
 
+    char request_verb[64] = {0};
+    char request_text[262144] = {0};
+    const char* request_rest = "";
+    if(strcmp(tool_name, "run_command") == 0 && args_json && json_get_string(args_json, "command", request_text, sizeof(request_text)))
+    {
+        parse_command_text(request_text, request_verb, sizeof(request_verb), &request_rest);
+        snprintf(server->last_command, sizeof(server->last_command), "%s", request_verb);
+        if(strcmp(request_verb, "load") == 0)
+            snprintf(server->last_load_target, sizeof(server->last_load_target), "%s", request_rest);
+    }
+    else
+    {
+        snprintf(server->last_command, sizeof(server->last_command), "%s", tool_name);
+    }
+
     char raw[262144];
     if(!run_mcp_tool(server, tool_name, args_json, raw, sizeof(raw)))
     {
+        copy_last_nonempty_line(server->paths.stderr_log_path, server->last_stderr_tail, sizeof(server->last_stderr_tail));
         respond_error(io, child_is_running(server)
                               ? "tic80ctl: timed out waiting for MCP response"
                               : "tic80ctl: session terminated while waiting for response");
         return true;
     }
 
+    copy_last_nonempty_line(server->paths.stderr_log_path, server->last_stderr_tail, sizeof(server->last_stderr_tail));
+
     StringBuilder sb;
     sb_init(&sb);
     sb_appendf(&sb, "{\"ok\":true,\"is_error\":%s,\"mcp_raw\":", mcp_result_is_error(raw) ? "true" : "false");
     sb_append_json_string(&sb, raw);
+    sb_append(&sb, ",\"verb\":");
+    sb_append_json_string(&sb, request_verb[0] ? request_verb : tool_name);
+    sb_append(&sb, ",\"last_load_target\":");
+    sb_append_json_string(&sb, server->last_load_target);
+    sb_append(&sb, ",\"stderr_tail\":");
+    sb_append_json_string(&sb, server->last_stderr_tail);
     sb_append(&sb, "}");
     server_send_line(io, sb.data);
     sb_free(&sb);
@@ -1338,6 +1470,9 @@ static bool request_server_json(const StatePaths* paths, const char* request, Se
     json_get_string(line, "stdout", response->stdout_path, sizeof(response->stdout_path));
     json_get_string(line, "stderr", response->stderr_path, sizeof(response->stderr_path));
     json_get_string(line, "error", response->error, sizeof(response->error));
+    json_get_string(line, "verb", response->verb, sizeof(response->verb));
+    json_get_string(line, "last_load_target", response->last_load_target, sizeof(response->last_load_target));
+    json_get_string(line, "stderr_tail", response->stderr_tail, sizeof(response->stderr_tail));
     response->has_mcp_raw = json_get_string(line, "mcp_raw", response->mcp_raw, sizeof(response->mcp_raw));
     json_get_bool(line, "is_error", &response->is_error);
     json_get_bool(line, "stopped", &response->stopped);
@@ -1412,19 +1547,252 @@ static bool extract_first_text(const char* raw, char* out, size_t out_size)
     return true;
 }
 
-static int print_mcp_response(const char* command_name, const ServerResponse* response, bool json_output)
+static void trim_text_in_place(char* text)
+{
+    char* start = text;
+    while(*start && isspace((unsigned char)*start))
+        start++;
+
+    if(start != text)
+        memmove(text, start, strlen(start) + 1);
+
+    size_t len = strlen(text);
+    while(len > 0 && isspace((unsigned char)text[len - 1]))
+        text[--len] = '\0';
+}
+
+static bool extract_structured_content(const char* raw, char* out, size_t out_size)
+{
+    return json_get_raw_value(raw, "structuredContent", out, out_size);
+}
+
+static bool extract_first_text_into_buffer(const char* raw, char* out, size_t out_size)
+{
+    if(!extract_first_text(raw, out, out_size))
+        return false;
+    return true;
+}
+
+static bool print_structured_value(FILE* out, const char* raw)
+{
+    if(raw[0] == '"')
+    {
+        char* text = parse_json_string_value(raw, NULL);
+        if(!text) return false;
+        fputs(text, out);
+        free(text);
+        return true;
+    }
+
+    fputs(raw, out);
+    return true;
+}
+
+static void append_command_diagnostics_json(StringBuilder* sb, const char* request_text, const ServerResponse* response)
+{
+    char verb[64] = {0};
+    char request_target[PATH_MAX] = {0};
+    const char* rest = "";
+    parse_command_text(request_text ? request_text : "", verb, sizeof(verb), &rest);
+    if(strcmp(verb, "load") == 0)
+        snprintf(request_target, sizeof(request_target), "%s", rest);
+
+    const char* failure_kind = "";
+    const char* hint = "";
+    bool load_prompt_missing = false;
+
+    if(strcmp(verb, "run") == 0 && strstr(response->mcp_raw, "the code is empty"))
+    {
+        failure_kind = "empty_code";
+        hint = "previous load did not produce a valid cart";
+    }
+    else if(strcmp(verb, "eval") == 0 && strstr(response->mcp_raw, "runtime not initialized"))
+    {
+        failure_kind = "runtime_not_initialized";
+        hint = "the run command did not start a VM";
+    }
+    else if(strcmp(verb, "load") == 0)
+    {
+        char text[262144];
+        if(!extract_first_text_into_buffer(response->mcp_raw, text, sizeof(text)) || text[0] == '\0')
+        {
+            failure_kind = "load_missing_confirmation";
+            hint = "TIC-80 returned no explicit confirmation for the load";
+            load_prompt_missing = true;
+        }
+        else if(response->is_error)
+        {
+            failure_kind = "project_loading_error";
+            hint = "see stderr_tail for the underlying loader message";
+        }
+    }
+
+    if(!failure_kind[0] && response->is_error && (strcmp(verb, "run") == 0 || strcmp(verb, "eval") == 0))
+    {
+        failure_kind = "command_error";
+        hint = "see stderr_tail for the underlying TIC-80 error";
+    }
+
+    sb_append(sb, ",\"diagnostics\":{");
+    sb_append(sb, "\"verb\":");
+    sb_append_json_string(sb, verb[0] ? verb : "");
+    sb_append(sb, ",\"request_target\":");
+    sb_append_json_string(sb, request_target);
+    sb_append(sb, ",\"last_load_target\":");
+    sb_append_json_string(sb, response->last_load_target);
+    sb_append(sb, ",\"stderr_tail\":");
+    sb_append_json_string(sb, response->stderr_tail);
+    if(failure_kind[0])
+    {
+        sb_append(sb, ",\"failure_kind\":");
+        sb_append_json_string(sb, failure_kind);
+        sb_append(sb, ",\"hint\":");
+        sb_append_json_string(sb, hint);
+    }
+    else if(load_prompt_missing)
+    {
+        sb_append(sb, ",\"hint\":");
+        sb_append_json_string(sb, "subsequent run may still fail if TIC-80 rejected the cart");
+    }
+    sb_append(sb, "}");
+}
+
+static bool print_structured_lines(const char* structured)
+{
+    static const char* Keys[] = {
+        "track", "frame", "pattern", "row",
+        "bank", "vbank", "id", "sfx", "waveform", "target",
+        "x", "y", "width", "height",
+        "tempo", "speed", "start", "size",
+        "left", "right",
+        "patterns", "rows", "values", "colors", "tiles", "sprites",
+    };
+
+    bool printed = false;
+    for(size_t i = 0; i < sizeof(Keys) / sizeof(Keys[0]); i++)
+    {
+        char value[262144];
+        if(!json_get_raw_value(structured, Keys[i], value, sizeof(value)))
+            continue;
+
+        if(printed)
+            fputc('\n', stdout);
+        printf("%s=", Keys[i]);
+        if(!print_structured_value(stdout, value))
+            return false;
+        printed = true;
+    }
+
+    if(printed)
+        fputc('\n', stdout);
+
+    return printed;
+}
+
+static void print_command_diagnostics_human(const char* request_text, const ServerResponse* response)
+{
+    char verb[64] = {0};
+    char request_target[PATH_MAX] = {0};
+    const char* rest = "";
+    parse_command_text(request_text ? request_text : "", verb, sizeof(verb), &rest);
+    if(strcmp(verb, "load") == 0)
+        snprintf(request_target, sizeof(request_target), "%s", rest);
+
+    if(strcmp(verb, "run") == 0 && strstr(response->mcp_raw, "the code is empty"))
+    {
+        printf("run failed: TIC-80 reports no loaded code\n");
+        if(response->last_load_target[0])
+            printf("last load target: %s\n", response->last_load_target);
+        else if(request_target[0])
+            printf("last load target: %s\n", request_target);
+        if(response->stderr_tail[0])
+            printf("stderr tail: %s\n", response->stderr_tail);
+    }
+    else if(strcmp(verb, "eval") == 0 && strstr(response->mcp_raw, "runtime not initialized"))
+    {
+        printf("eval failed: runtime not initialized\n");
+        if(response->last_load_target[0])
+            printf("last load target: %s\n", response->last_load_target);
+        if(response->stderr_tail[0])
+            printf("stderr tail: %s\n", response->stderr_tail);
+    }
+    else if(strcmp(verb, "load") == 0)
+    {
+        char text[262144];
+        if(!extract_first_text_into_buffer(response->mcp_raw, text, sizeof(text)) || text[0] == '\0')
+        {
+            printf("load produced no explicit confirmation for %s\n", request_target[0] ? request_target : "<unknown>");
+            if(response->stderr_tail[0])
+                printf("stderr tail: %s\n", response->stderr_tail);
+        }
+        else if(response->is_error)
+        {
+            trim_text_in_place(text);
+            printf("load failed: %s\n", text);
+            if(response->last_load_target[0])
+                printf("last load target: %s\n", response->last_load_target);
+            else if(request_target[0])
+                printf("last load target: %s\n", request_target);
+            if(response->stderr_tail[0])
+                printf("stderr tail: %s\n", response->stderr_tail);
+        }
+    }
+    else if(response->is_error && (strcmp(verb, "run") == 0 || strcmp(verb, "eval") == 0))
+    {
+        char text[262144];
+        if(extract_first_text_into_buffer(response->mcp_raw, text, sizeof(text)) && text[0] != '\0')
+        {
+            trim_text_in_place(text);
+            printf("%s failed: %s\n", verb, text);
+        }
+        else
+            printf("%s failed: tic80ctl reported an error\n", verb[0] ? verb : "command");
+        if(response->last_load_target[0])
+            printf("last load target: %s\n", response->last_load_target);
+        if(response->stderr_tail[0])
+            printf("stderr tail: %s\n", response->stderr_tail);
+    }
+}
+
+static int print_mcp_response(const char* command_name, const char* request_text, const ServerResponse* response, bool json_output)
 {
     if(json_output)
     {
-        printf("{\"command\":\"%s\",\"response\":%s}\n", command_name, response->mcp_raw);
+        StringBuilder sb;
+        sb_init(&sb);
+        sb_append(&sb, "{\"command\":");
+        sb_append_json_string(&sb, command_name);
+        sb_append(&sb, ",\"response\":");
+        sb_append(&sb, response->mcp_raw);
+        if(request_text && *request_text)
+            append_command_diagnostics_json(&sb, request_text, response);
+        sb_append(&sb, "}");
+        printf("%s\n", sb.data ? sb.data : "{\"command\":\"run_command\",\"response\":{}}");
+        sb_free(&sb);
     }
     else
     {
         char text[262144];
-        if(extract_first_text(response->mcp_raw, text, sizeof(text)))
+        char structured[262144];
+        if(request_text && *request_text)
+        {
+            if(extract_first_text(response->mcp_raw, text, sizeof(text)))
+                printf("%s\n", text);
+            else
+                printf("%s\n", response->mcp_raw);
+        }
+        else if(extract_structured_content(response->mcp_raw, structured, sizeof(structured)))
+        {
+            if(!print_structured_lines(structured))
+                printf("%s\n", structured);
+        }
+        else if(extract_first_text(response->mcp_raw, text, sizeof(text)))
             printf("%s\n", text);
         else
             printf("%s\n", response->mcp_raw);
+
+        if(request_text && *request_text)
+            print_command_diagnostics_human(request_text, response);
     }
 
     return response->is_error ? 1 : 0;
@@ -1609,7 +1977,7 @@ static int stop_session(const StatePaths* paths, bool json_output)
     return 0;
 }
 
-static int send_tool_request(const StatePaths* paths, const char* request_json, const char* command_name, bool json_output)
+static int send_tool_request(const StatePaths* paths, const char* request_json, const char* command_name, const char* request_text, bool json_output)
 {
     ServerResponse response;
     if(!request_server_json(paths, request_json, &response))
@@ -1618,7 +1986,7 @@ static int send_tool_request(const StatePaths* paths, const char* request_json, 
     if(!response.ok)
         return print_transport_error(response.error[0] ? response.error : "tic80ctl: no active session; run `tic80ctl start`");
 
-    return print_mcp_response(command_name, &response, json_output);
+    return print_mcp_response(command_name, request_text, &response, json_output);
 }
 
 static int run_command_request(const StatePaths* paths, const char* value, const char* command_name, bool json_output)
@@ -1633,7 +2001,7 @@ static int run_command_request(const StatePaths* paths, const char* value, const
     sb_append(&request, ",\"value\":");
     sb_append_json_string(&request, value);
     sb_append(&request, "}");
-    int rc = send_tool_request(paths, request.data, command_name, json_output);
+    int rc = send_tool_request(paths, request.data, command_name, value, json_output);
     sb_free(&request);
     return rc;
 }
@@ -1653,7 +2021,7 @@ static int screenshot_request(const StatePaths* paths, const char* value, bool j
         sb_append_json_string(&request, value);
     }
     sb_append(&request, "}");
-    int rc = send_tool_request(paths, request.data, "capture_screenshot", json_output);
+    int rc = send_tool_request(paths, request.data, "capture_screenshot", NULL, json_output);
     sb_free(&request);
     return rc;
 }
@@ -1672,7 +2040,27 @@ static int playtest_request(const StatePaths* paths, const char* script, bool ha
     sb_append_json_string(&request, script);
     if(has_timeout) sb_appendf(&request, ",\"timeout_seconds\":%ld", timeout_seconds);
     sb_appendf(&request, ",\"input_overlay\":%s}", input_overlay ? "true" : "false");
-    int rc = send_tool_request(paths, request.data, "run_playtest_episode", json_output);
+    int rc = send_tool_request(paths, request.data, "run_playtest_episode", NULL, json_output);
+    sb_free(&request);
+    return rc;
+}
+
+static int tool_request(const StatePaths* paths, const char* tool_name, const char* args_json, const char* command_name, bool json_output)
+{
+    StringBuilder request;
+    sb_init(&request);
+    if(!build_request(&request, paths, "tool"))
+    {
+        sb_free(&request);
+        return print_transport_error("tic80ctl: no active session; run `tic80ctl start`");
+    }
+
+    sb_append(&request, ",\"tool\":");
+    sb_append_json_string(&request, tool_name);
+    sb_append(&request, ",\"args_json\":");
+    sb_append(&request, args_json ? args_json : "{}");
+    sb_append(&request, "}");
+    int rc = send_tool_request(paths, request.data, command_name ? command_name : tool_name, NULL, json_output);
     sb_free(&request);
     return rc;
 }

@@ -23,12 +23,45 @@ log("smoke")
 frameadvance()
 end_episode("done", "smoke")
 EOF
+EMPTY_CART="$SESSION_DIR/empty.lua"
+: > "$EMPTY_CART"
 
 START_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start)"
 printf '%s\n' "$START_OUT" | grep -q '^started tic80ctl session'
 
 STATUS_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" status)"
 printf '%s\n' "$STATUS_OUT" | grep -q '^running pid='
+
+set +e
+LOAD_FAIL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load "$EMPTY_CART" 2>&1)"
+LOAD_FAIL_STATUS=$?
+set -e
+[ "$LOAD_FAIL_STATUS" -ne 0 ]
+printf '%s\n' "$LOAD_FAIL_OUT" | grep -q '^load failed: project loading error$'
+printf '%s\n' "$LOAD_FAIL_OUT" | grep -qF "last load target: $EMPTY_CART"
+printf '%s\n' "$LOAD_FAIL_OUT" | grep -q '^stderr tail: >$'
+
+set +e
+LOAD_FAIL_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" cmd --json "load $EMPTY_CART" 2>&1)"
+LOAD_FAIL_JSON_STATUS=$?
+set -e
+[ "$LOAD_FAIL_JSON_STATUS" -ne 0 ]
+printf '%s\n' "$LOAD_FAIL_JSON" | jq -e '.response.result.structuredContent.command == "load" and .response.result.structuredContent.error_kind == "project_loading_error" and .diagnostics.verb == "load" and .diagnostics.failure_kind == "project_loading_error" and (.diagnostics.last_load_target | endswith("/empty.lua"))' >/dev/null
+
+set +e
+EVAL_FAIL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" eval "trace(type(TIC))" 2>&1)"
+EVAL_FAIL_STATUS=$?
+set -e
+[ "$EVAL_FAIL_STATUS" -ne 0 ]
+printf '%s\n' "$EVAL_FAIL_OUT" | grep -q '^eval failed: runtime not initialized$'
+printf '%s\n' "$EVAL_FAIL_OUT" | grep -q '^stderr tail: >$'
+
+set +e
+EVAL_FAIL_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" cmd --json "eval trace(type(TIC))" 2>&1)"
+EVAL_FAIL_JSON_STATUS=$?
+set -e
+[ "$EVAL_FAIL_JSON_STATUS" -ne 0 ]
+printf '%s\n' "$EVAL_FAIL_JSON" | jq -e '.response.result.structuredContent.command == "eval" and .response.result.structuredContent.error_kind == "runtime_not_initialized" and .diagnostics.verb == "eval" and .diagnostics.failure_kind == "runtime_not_initialized" and .diagnostics.hint == "the run command did not start a VM"' >/dev/null
 
 set +e
 START_WITH_CART_ERR="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start tools/mcp/fixtures/playtest_episode.lua 2>&1)"
@@ -47,7 +80,7 @@ LOAD_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl
 printf '%s\n' "$LOAD_JSON" | jq -e '.response.result.isError == false' >/dev/null
 
 RUN_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" run --json)"
-printf '%s\n' "$RUN_JSON" | jq -e '.response.result.isError == false' >/dev/null
+printf '%s\n' "$RUN_JSON" | jq -e '.response.result.isError == false and .response.result.structuredContent.command == "run" and .response.result.structuredContent.recognized == true and .response.result.structuredContent.mode_before == "console" and .response.result.structuredContent.mode_after == "run" and .response.result.structuredContent.core_initialized_after == true and .response.result.structuredContent.error_kind == "none" and .diagnostics.verb == "run" and .diagnostics.last_load_target == "tools/mcp/fixtures/playtest_episode.lua"' >/dev/null
 
 EVAL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" eval "trace(type(TIC))")"
 printf '%s\n' "$EVAL_OUT" | grep -q 'function'

@@ -4855,16 +4855,79 @@ char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 tim
     return strdup(result);
 }
 
+static RunCommandMcpResult gRunCommandMcpResult;
+
+const RunCommandMcpResult* consoleGetRunCommandMcpResult(void)
+{
+    return &gRunCommandMcpResult;
+}
+
+static EditorMode getRunCommandMode(Console* console)
+{
+    return console && console->studio
+        ? getStudioMode(console->studio)
+        : TIC_START_MODE;
+}
+
+static const char* normalizeRunCommandErrorKind(bool recognized, bool commandErrorOccurred, const char* text)
+{
+    if(text)
+    {
+        if(strstr(text, "empty command"))
+            return "empty_command";
+
+        if(strstr(text, "mcp console not initialized"))
+            return "console_not_initialized";
+
+        if(strstr(text, "the code is empty"))
+            return "empty_code";
+
+        if(strstr(text, "runtime not initialized"))
+            return "runtime_not_initialized";
+
+        if(strstr(text, "project loading error") || strstr(text, "cart loading error"))
+            return "project_loading_error";
+
+        if(strstr(text, "failed to capture command output"))
+            return "command_error";
+    }
+
+    if(!recognized)
+        return "unknown_command";
+
+    return commandErrorOccurred ? "command_error" : "none";
+}
+
+static void captureRunCommandMcpResult(const char* command, bool recognized, EditorMode modeBefore, EditorMode modeAfter, bool coreInitializedAfter, bool commandErrorOccurred, const char* text)
+{
+    memset(&gRunCommandMcpResult, 0, sizeof gRunCommandMcpResult);
+    snprintf(gRunCommandMcpResult.command, sizeof gRunCommandMcpResult.command, "%s", command ? command : "");
+    gRunCommandMcpResult.recognized = recognized;
+    gRunCommandMcpResult.modeBefore = modeBefore;
+    gRunCommandMcpResult.modeAfter = modeAfter;
+    gRunCommandMcpResult.coreInitializedAfter = coreInitializedAfter;
+    snprintf(gRunCommandMcpResult.errorKind, sizeof gRunCommandMcpResult.errorKind, "%s",
+        normalizeRunCommandErrorKind(recognized, commandErrorOccurred, text));
+}
+
 char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 {
     if(isError)
         *isError = true;
 
     if(command == NULL || *command == '\0')
+    {
+        EditorMode mode = getRunCommandMode(console);
+        captureRunCommandMcpResult(command, false, mode, mode, false, true, "empty command");
         return strdup("empty command");
+    }
 
     if(console == NULL || console->desc == NULL)
+    {
+        EditorMode mode = getRunCommandMode(console);
+        captureRunCommandMcpResult(command, false, mode, mode, false, true, "mcp console not initialized");
         return strdup("mcp console not initialized");
+    }
 
     char commandName[TICNAME_MAX] = {0};
     bool commandKnown = false;
@@ -4895,9 +4958,13 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
         char* text = calloc(1, size);
 
         if(text == NULL)
+        {
+            captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, true, "unknown command");
             return strdup("unknown command");
+        }
 
         sprintf(text, "unknown command: %s", commandName);
+        captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, true, text);
         return text;
     }
 
@@ -4905,6 +4972,7 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 
     if(stream == NULL)
     {
+        captureRunCommandMcpResult(commandName, true, getStudioMode(console->studio), getStudioMode(console->studio), false, true, "failed to capture command output");
         return strdup("failed to capture command output");
     }
 
@@ -4912,12 +4980,14 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     bool previousMcpCommandActive = console->mcp.command.active;
     bool previousMcpCommandError = console->mcp.command.errorOccurred;
     tic_core* core = (tic_core*)console->tic;
-    console->mcp.command.startMode = getStudioMode(console->studio);
+    EditorMode modeBefore = getStudioMode(console->studio);
+    console->mcp.command.startMode = modeBefore;
     bool preserveRunScreen = console->mcp.command.startMode == TIC_RUN_MODE && console->tic != NULL;
 
     console->output = stream;
     console->mcp.command.active = true;
     console->mcp.command.errorOccurred = false;
+    console->mcp.command.tickData.data = console;
     console->mcp.command.previousTickData = core ? core->data : NULL;
     if(core)
         core->data = &console->mcp.command.tickData;
@@ -4986,6 +5056,14 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
         && console->mcp.command.startMode == TIC_RUN_MODE
         && getStudioMode(console->studio) == TIC_RUN_MODE))
         console->mcp.command.preservedScreenValid = false;
+
+    captureRunCommandMcpResult(commandName,
+        commandKnown,
+        modeBefore,
+        getStudioMode(console->studio),
+        core ? core->state.initialized : false,
+        commandErrorOccurred,
+        streamData);
 
     return streamData;
 }
