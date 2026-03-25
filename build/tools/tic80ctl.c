@@ -1754,6 +1754,27 @@ static void print_command_diagnostics_human(const char* request_text, const Serv
     }
 }
 
+static bool print_run_success_human(const char* request_text, const ServerResponse* response)
+{
+    char verb[64] = {0};
+    const char* rest = "";
+    parse_command_text(request_text ? request_text : "", verb, sizeof(verb), &rest);
+
+    if(response->is_error || strcmp(verb, "run") != 0)
+        return false;
+
+    char text[262144];
+    if(extract_first_text_into_buffer(response->mcp_raw, text, sizeof(text)))
+    {
+        trim_text_in_place(text);
+        if(text[0] != '\0' && strcmp(text, ">") != 0)
+            return false;
+    }
+
+    printf("run started\n");
+    return true;
+}
+
 static int print_mcp_response(const char* command_name, const char* request_text, const ServerResponse* response, bool json_output)
 {
     if(json_output)
@@ -1776,7 +1797,9 @@ static int print_mcp_response(const char* command_name, const char* request_text
         char structured[262144];
         if(request_text && *request_text)
         {
-            if(extract_first_text(response->mcp_raw, text, sizeof(text)))
+            if(print_run_success_human(request_text, response))
+                ;
+            else if(extract_first_text(response->mcp_raw, text, sizeof(text)))
                 printf("%s\n", text);
             else
                 printf("%s\n", response->mcp_raw);

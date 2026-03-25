@@ -14,6 +14,7 @@ EPISODE_SCRIPT="$SESSION_DIR/episode.lua"
 
 cleanup() {
   TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
+  rm -f "$ROOT/.tmp_tic80ctl_run_ok.lua"
   rm -rf "$SESSION_DIR"
 }
 trap cleanup EXIT
@@ -25,6 +26,11 @@ end_episode("done", "smoke")
 EOF
 EMPTY_CART="$SESSION_DIR/empty.lua"
 : > "$EMPTY_CART"
+RUN_OK_CART=".tmp_tic80ctl_run_ok.lua"
+cat > "$ROOT/$RUN_OK_CART" <<'EOF'
+function TIC()
+end
+EOF
 
 START_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start)"
 printf '%s\n' "$START_OUT" | grep -q '^started tic80ctl session'
@@ -79,8 +85,17 @@ printf '%s\n' "$STATUS_AFTER_CMD" | grep -q '^running pid='
 LOAD_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load --json tools/mcp/fixtures/playtest_episode.lua)"
 printf '%s\n' "$LOAD_JSON" | jq -e '.response.result.isError == false' >/dev/null
 
+RUN_OK_LOAD_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load "$RUN_OK_CART")"
+printf '%s\n' "$RUN_OK_LOAD_OUT" | grep -q 'cart '
+
+RUN_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" run)"
+printf '%s\n' "$RUN_OUT" | grep -q '^run started$'
+
+LOAD_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load --json tools/mcp/fixtures/playtest_episode.lua)"
+printf '%s\n' "$LOAD_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
 RUN_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" run --json)"
-printf '%s\n' "$RUN_JSON" | jq -e '.response.result.isError == false and .response.result.structuredContent.command == "run" and .response.result.structuredContent.recognized == true and .response.result.structuredContent.mode_before == "console" and .response.result.structuredContent.mode_after == "run" and .response.result.structuredContent.core_initialized_after == true and .response.result.structuredContent.error_kind == "none" and .diagnostics.verb == "run" and .diagnostics.last_load_target == "tools/mcp/fixtures/playtest_episode.lua"' >/dev/null
+printf '%s\n' "$RUN_JSON" | jq -e '.response.result.isError == false and .response.result.structuredContent.command == "run" and .response.result.structuredContent.recognized == true and .response.result.structuredContent.mode_after == "run" and .response.result.structuredContent.core_initialized_after == true and .response.result.structuredContent.error_kind == "none" and .diagnostics.verb == "run" and .diagnostics.last_load_target == "tools/mcp/fixtures/playtest_episode.lua"' >/dev/null
 
 EVAL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" eval "trace(type(TIC))")"
 printf '%s\n' "$EVAL_OUT" | grep -q 'function'
