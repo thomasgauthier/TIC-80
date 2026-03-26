@@ -105,7 +105,11 @@ static const char* usage_text =
     "  run\n"
     "  eval \"<expr>\"\n"
     "  screenshot [path]\n"
-    "  playtest --script-file <file> [--timeout <seconds>] [--input-overlay|--no-input-overlay]\n";
+    "  playtest --script-file <file> [--timeout <seconds>] [--input-overlay|--no-input-overlay]\n"
+    "  sfx ...\n"
+    "  music ...\n"
+    "  sprite ...\n"
+    "  map ...\n";
 
 static void sb_init(StringBuilder* sb)
 {
@@ -212,6 +216,34 @@ static bool sb_append_json_string(StringBuilder* sb, const char* text)
     }
 
     return sb_append(sb, "\"");
+}
+
+static bool parse_long_strict(const char* text, long* out)
+{
+    if(!text || !*text) return false;
+    char* end = NULL;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if(errno != 0 || !end || *end) return false;
+    *out = value;
+    return true;
+}
+
+static bool parse_int_strict(const char* text, int* out)
+{
+    long value = 0;
+    if(!parse_long_strict(text, &value)) return false;
+    if(value < INT_MIN || value > INT_MAX) return false;
+    *out = (int)value;
+    return true;
+}
+
+static int hex_value(char c)
+{
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if(c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
 }
 
 static void failf(const char* fmt, ...)
@@ -1269,6 +1301,20 @@ static bool process_request(Server* server, FILE* io, const char* json)
         return keep_running;
     }
 
+    if(strcmp(command, "tool") == 0)
+    {
+        char tool[128];
+        char args_json[262144];
+        if(!json_get_string(json, "tool", tool, sizeof(tool))
+            || !json_get_raw_value(json, "args_json", args_json, sizeof(args_json)))
+        {
+            respond_error(io, "tic80ctl: malformed request");
+            return true;
+        }
+
+        return handle_tool_request(server, io, tool, args_json);
+    }
+
     respond_error(io, "tic80ctl: malformed request");
     return true;
 }
@@ -2088,6 +2134,991 @@ static int tool_request(const StatePaths* paths, const char* tool_name, const ch
     return rc;
 }
 
+static bool append_json_int_array(StringBuilder* sb, const int* values, int count)
+{
+    if(!sb_append(sb, "[")) return false;
+    for(int i = 0; i < count; i++)
+    {
+        if(i > 0 && !sb_append(sb, ",")) return false;
+        if(!sb_appendf(sb, "%d", values[i])) return false;
+    }
+    return sb_append(sb, "]");
+}
+
+static bool parse_hex_fixed_values(const char* text, int expected, int* values)
+{
+    if((int)strlen(text) != expected) return false;
+    for(int i = 0; i < expected; i++)
+    {
+        int value = hex_value(text[i]);
+        if(value < 0) return false;
+        values[i] = value;
+    }
+    return true;
+}
+
+static bool parse_fixed_int_csv(const char* text, int expected, int min, int max, int* values)
+{
+    char* copy = strdup(text);
+    if(!copy) return false;
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+    {
+        int value = 0;
+        if(count >= expected || !parse_int_strict(tok, &value) || value < min || value > max)
+        {
+            free(copy);
+            return false;
+        }
+        values[count++] = value;
+    }
+    free(copy);
+    return count == expected;
+}
+
+static bool parse_var_int_csv(const char* text, int min, int max, int* values, int max_count, int* out_count)
+{
+    char* copy = strdup(text);
+    if(!copy) return false;
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+    {
+        int value = 0;
+        if(count >= max_count || !parse_int_strict(tok, &value) || value < min || value > max)
+        {
+            free(copy);
+            return false;
+        }
+        values[count++] = value;
+    }
+    free(copy);
+    if(count <= 0) return false;
+    *out_count = count;
+    return true;
+}
+
+typedef struct
+{
+    int tick;
+    int value;
+} Keyframe;
+
+static bool parse_keyframes_expand(const char* text, int steps, int min, int max, int* values)
+{
+    char* copy = strdup(text);
+    if(!copy) return false;
+    Keyframe frames[64];
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+    {
+        char* colon = strchr(tok, ':');
+        if(!colon || count >= (int)(sizeof(frames) / sizeof(frames[0])))
+        {
+            free(copy);
+            return false;
+        }
+        *colon = '\0';
+        int tick = 0;
+        int value = 0;
+        if(!parse_int_strict(tok, &tick) || !parse_int_strict(colon + 1, &value)
+            || tick < 0 || tick >= steps || value < min || value > max)
+        {
+            free(copy);
+            return false;
+        }
+        if(count > 0 && tick <= frames[count - 1].tick)
+        {
+            free(copy);
+            return false;
+        }
+        frames[count].tick = tick;
+        frames[count].value = value;
+        count++;
+    }
+    free(copy);
+    if(count <= 0) return false;
+
+    for(int i = 0; i < frames[0].tick; i++)
+        values[i] = frames[0].value;
+
+    for(int i = 0; i + 1 < count; i++)
+    {
+        int start_tick = frames[i].tick;
+        int end_tick = frames[i + 1].tick;
+        int start_value = frames[i].value;
+        int delta = frames[i + 1].value - start_value;
+        int span = end_tick - start_tick;
+        for(int tick = start_tick; tick <= end_tick; tick++)
+        {
+            int num = delta * (tick - start_tick);
+            int value = start_value + (num >= 0 ? (num + span / 2) / span : (num - span / 2) / span);
+            values[tick] = value;
+        }
+    }
+
+    for(int i = frames[count - 1].tick; i < steps; i++)
+        values[i] = frames[count - 1].value;
+
+    return true;
+}
+
+static bool append_sprite_rows_json(StringBuilder* sb, const char* payload)
+{
+    char* copy = strdup(payload);
+    if(!copy) return false;
+    bool ok = sb_append(sb, "[");
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok && ok; tok = strtok_r(NULL, ",", &save))
+    {
+        if(count >= 8 || strlen(tok) != 8)
+        {
+            ok = false;
+            break;
+        }
+        for(int i = 0; i < 8; i++)
+            if(hex_value(tok[i]) < 0)
+            {
+                ok = false;
+                break;
+            }
+        if(!ok) break;
+        if(count > 0) ok = sb_append(sb, ",");
+        if(ok) ok = sb_append_json_string(sb, tok);
+        count++;
+    }
+    if(ok) ok = (count == 8) && sb_append(sb, "]");
+    free(copy);
+    return ok;
+}
+
+static bool append_palette_json(StringBuilder* sb, const char* payload)
+{
+    char* copy = strdup(payload);
+    if(!copy) return false;
+    bool ok = sb_append(sb, "[");
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok && ok; tok = strtok_r(NULL, ",", &save))
+    {
+        if(count >= 16 || strlen(tok) != 6)
+        {
+            ok = false;
+            break;
+        }
+        for(int i = 0; i < 6; i++)
+            if(hex_value(tok[i]) < 0)
+            {
+                ok = false;
+                break;
+            }
+        if(!ok) break;
+        if(count > 0) ok = sb_append(sb, ",");
+        if(ok) ok = sb_append_json_string(sb, tok);
+        count++;
+    }
+    if(ok) ok = (count == 16) && sb_append(sb, "]");
+    free(copy);
+    return ok;
+}
+
+static bool append_region_sprites_json(StringBuilder* sb, const char* payload, int expected_tiles)
+{
+    char* copy = strdup(payload);
+    if(!copy) return false;
+    bool ok = sb_append(sb, "[");
+    int count = 0;
+    char* save = NULL;
+    for(char* tile = strtok_r(copy, ";", &save); tile && ok; tile = strtok_r(NULL, ";", &save))
+    {
+        if(count >= expected_tiles)
+        {
+            ok = false;
+            break;
+        }
+        if(count > 0) ok = sb_append(sb, ",");
+        if(ok) ok = sb_append(sb, "{\"rows\":");
+        if(ok) ok = append_sprite_rows_json(sb, tile);
+        if(ok) ok = sb_append(sb, "}");
+        count++;
+    }
+    if(ok) ok = (count == expected_tiles) && sb_append(sb, "]");
+    free(copy);
+    return ok;
+}
+
+static bool append_frame_patterns_json(StringBuilder* sb, const char* payload)
+{
+    char* copy = strdup(payload);
+    if(!copy) return false;
+    bool ok = sb_append(sb, "[");
+    int count = 0;
+    char* save = NULL;
+    for(char* tok = strtok_r(copy, ",", &save); tok && ok; tok = strtok_r(NULL, ",", &save))
+    {
+        if(count >= 4)
+        {
+            ok = false;
+            break;
+        }
+        int value = -1;
+        if(strcmp(tok, "-") != 0 && (!parse_int_strict(tok, &value) || value < -1 || value > 63))
+        {
+            ok = false;
+            break;
+        }
+        if(count > 0) ok = sb_append(sb, ",");
+        if(ok) ok = sb_appendf(sb, "%d", value);
+        count++;
+    }
+    if(ok) ok = (count == 4) && sb_append(sb, "]");
+    free(copy);
+    return ok;
+}
+
+static bool append_music_row_json(StringBuilder* sb, int row, const char* note, const char* sfx, const char* command)
+{
+    if(row < 0 || row >= 64) return false;
+    if(!sb_appendf(sb, "{\"row\":%d", row)) return false;
+
+    if(strcmp(note, "-") != 0)
+    {
+        char note_buf[8];
+        if(strcmp(note, "OFF") == 0)
+        {
+            if(!sb_append(sb, ",\"note\":\"OFF\",\"octave\":0")) return false;
+        }
+        else
+        {
+            size_t len = strlen(note);
+            if(len < 3 || len > 4) return false;
+            char octave_char = note[len - 1];
+            if(octave_char < '0' || octave_char > '7') return false;
+            memcpy(note_buf, note, len - 1);
+            note_buf[len - 1] = '\0';
+            if(!sb_append(sb, ",\"note\":") || !sb_append_json_string(sb, note_buf)) return false;
+            if(!sb_appendf(sb, ",\"octave\":%d", octave_char - '0')) return false;
+        }
+    }
+
+    if(strcmp(sfx, "-") != 0)
+    {
+        int sfx_id = 0;
+        if(!parse_int_strict(sfx, &sfx_id) || sfx_id < 0 || sfx_id > 63) return false;
+        if(!sb_appendf(sb, ",\"sfx\":%d", sfx_id)) return false;
+    }
+
+    if(strcmp(command, "-") != 0)
+    {
+        size_t len = strlen(command);
+        if(len != 3) return false;
+        int p1 = hex_value(command[1]);
+        int p2 = hex_value(command[2]);
+        if(!isalpha((unsigned char)command[0]) || p1 < 0 || p2 < 0) return false;
+        char cmd[2] = {(char)toupper((unsigned char)command[0]), '\0'};
+        if(!sb_append(sb, ",\"command\":") || !sb_append_json_string(sb, cmd)) return false;
+        if(!sb_appendf(sb, ",\"param1\":%d,\"param2\":%d", p1, p2)) return false;
+    }
+
+    return sb_append(sb, "}");
+}
+
+static bool append_music_rows_json(StringBuilder* sb, const char* payload, bool single_row_mode, int fixed_row)
+{
+    char* copy = strdup(payload);
+    if(!copy) return false;
+    bool ok = true;
+    if(single_row_mode)
+    {
+        char* note = NULL;
+        char* sfx = NULL;
+        char* command = NULL;
+        char* save = NULL;
+        note = strtok_r(copy, ":", &save);
+        sfx = strtok_r(NULL, ":", &save);
+        command = strtok_r(NULL, ":", &save);
+        if(!note || !sfx || !command || strtok_r(NULL, ":", &save))
+            ok = false;
+        if(ok) ok = append_music_row_json(sb, fixed_row, note, sfx, command);
+        free(copy);
+        return ok;
+    }
+
+    ok = sb_append(sb, "{\"rows\":[");
+    int count = 0;
+    char* save_rows = NULL;
+    for(char* row_spec = strtok_r(copy, ",", &save_rows); row_spec && ok; row_spec = strtok_r(NULL, ",", &save_rows))
+    {
+        char* save = NULL;
+        char* row_text = strtok_r(row_spec, ":", &save);
+        char* note = strtok_r(NULL, ":", &save);
+        char* sfx = strtok_r(NULL, ":", &save);
+        char* command = strtok_r(NULL, ":", &save);
+        int row = 0;
+        if(!row_text || !note || !sfx || !command || strtok_r(NULL, ":", &save) || !parse_int_strict(row_text, &row))
+        {
+            ok = false;
+            break;
+        }
+        if(count > 0) ok = sb_append(sb, ",");
+        if(ok) ok = append_music_row_json(sb, row, note, sfx, command);
+        count++;
+    }
+    if(ok) ok = count > 0 && sb_append(sb, "]}");
+    free(copy);
+    return ok;
+}
+
+static bool append_object_body(StringBuilder* sb, const char* object_json)
+{
+    size_t len = strlen(object_json);
+    if(len < 2 || object_json[0] != '{' || object_json[len - 1] != '}')
+        return false;
+    return sb_append_n(sb, object_json + 1, len - 2);
+}
+
+static bool parse_bool_token(const char* text, bool* out)
+{
+    if(!text) return false;
+    if(strcmp(text, "1") == 0 || strcasecmp(text, "true") == 0 || strcasecmp(text, "yes") == 0 || strcasecmp(text, "on") == 0)
+    {
+        *out = true;
+        return true;
+    }
+    if(strcmp(text, "0") == 0 || strcasecmp(text, "false") == 0 || strcasecmp(text, "no") == 0 || strcasecmp(text, "off") == 0)
+    {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+static bool append_bool_json(StringBuilder* sb, const char* key, bool value)
+{
+    return sb_appendf(sb, ",\"%s\":%s", key, value ? "true" : "false");
+}
+
+static bool consume_long_option(int* argc, char*** argv, const char* name, long* out)
+{
+    if(*argc >= 2 && strcmp((*argv)[0], name) == 0)
+    {
+        if(!parse_long_strict((*argv)[1], out))
+            failf("tic80ctl: invalid value for %s: %s", name, (*argv)[1]);
+        *argc -= 2;
+        *argv += 2;
+        return true;
+    }
+
+    return false;
+}
+
+static bool consume_int_option(int* argc, char*** argv, const char* name, int* out)
+{
+    long value = 0;
+    if(!consume_long_option(argc, argv, name, &value))
+        return false;
+    if(value < INT_MIN || value > INT_MAX)
+        failf("tic80ctl: invalid value for %s", name);
+    *out = (int)value;
+    return true;
+}
+
+static bool consume_bool_option(int* argc, char*** argv, const char* name, bool* out)
+{
+    if(*argc >= 1 && strcmp((*argv)[0], name) == 0)
+    {
+        if(*argc >= 2 && (*argv)[1][0] != '-')
+        {
+            if(!parse_bool_token((*argv)[1], out))
+                failf("tic80ctl: invalid boolean for %s: %s", name, (*argv)[1]);
+            *argc -= 2;
+            *argv += 2;
+        }
+        else
+        {
+            *out = true;
+            *argc -= 1;
+            *argv += 1;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static bool consume_args_json_option(int* argc, char*** argv, const char** out)
+{
+    if(*argc >= 2 && strcmp((*argv)[0], "--args-json") == 0)
+    {
+        *out = (*argv)[1];
+        *argc -= 2;
+        *argv += 2;
+        return true;
+    }
+
+    return false;
+}
+
+static bool consume_bank_option(int* argc, char*** argv, int* bank)
+{
+    return consume_int_option(argc, argv, "--bank", bank);
+}
+
+static bool append_optional_int(StringBuilder* sb, const char* key, int value)
+{
+    if(value < 0) return true;
+    return sb_appendf(sb, ",\"%s\":%d", key, value);
+}
+
+static int build_and_send_tool(const StatePaths* paths, const char* tool_name, const char* command_name, bool json_output, StringBuilder* args)
+{
+    bool ok = sb_append(args, "}");
+    if(!ok)
+    {
+        sb_free(args);
+        return 1;
+    }
+
+    int rc = tool_request(paths, tool_name, args->data, command_name, json_output);
+    sb_free(args);
+    return rc;
+}
+
+static void init_object_args(StringBuilder* sb)
+{
+    sb_init(sb);
+    sb_append(sb, "{");
+}
+
+static int handle_sfx_command(const StatePaths* paths, int argc, char** argv, bool json_output)
+{
+    if(argc <= 0)
+        failf("tic80ctl: sfx requires a subcommand");
+
+    const char* mode = argv[0];
+    argc--;
+    argv++;
+
+    if(strcmp(mode, "wavetable") == 0)
+    {
+        int bank = -1;
+        int waveform = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        if(!consume_int_option(&argc, &argv, "--waveform", &waveform))
+            consume_int_option(&argc, &argv, "--wave", &waveform);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sfx_set_wavetable", args_json, "sfx_wavetable", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sfx wavetable <sfx> [hex32]");
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        append_optional_int(&args, "waveform", waveform);
+        if(argc == 1)
+            return build_and_send_tool(paths, "sfx_get_wavetable", "sfx_wavetable", json_output, &args);
+        int values[32];
+        if(!parse_hex_fixed_values(argv[1], 32, values))
+            failf("tic80ctl: sfx wavetable payload must be 32 hex digits");
+        sb_append(&args, ",\"values\":");
+        append_json_int_array(&args, values, 32);
+        return build_and_send_tool(paths, "sfx_set_wavetable", "sfx_wavetable", json_output, &args);
+    }
+
+    if(strcmp(mode, "volume") == 0 || strcmp(mode, "wave") == 0 || strcmp(mode, "pitch") == 0)
+    {
+        int bank = -1;
+        bool pitch16x = false;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        if(strcmp(mode, "pitch") == 0)
+            consume_bool_option(&argc, &argv, "--pitch16x", &pitch16x);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+        {
+            const char* tool = strcmp(mode, "volume") == 0 ? "sfx_set_volume_envelope"
+                : strcmp(mode, "wave") == 0 ? "sfx_set_wave_envelope"
+                : "sfx_set_pitch_envelope";
+            return tool_request(paths, tool, args_json, tool, json_output);
+        }
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sfx %s <sfx> [payload]", mode);
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        if(argc == 1)
+        {
+            const char* tool = strcmp(mode, "volume") == 0 ? "sfx_get_volume_envelope"
+                : strcmp(mode, "wave") == 0 ? "sfx_get_wave_envelope"
+                : "sfx_get_pitch_envelope";
+            return build_and_send_tool(paths, tool, tool, json_output, &args);
+        }
+        int values[30];
+        bool parsed = strcmp(mode, "volume") == 0 ? parse_keyframes_expand(argv[1], 30, 0, 15, values)
+            : strcmp(mode, "wave") == 0 ? parse_keyframes_expand(argv[1], 30, 0, 15, values)
+            : parse_keyframes_expand(argv[1], 30, -8, 7, values);
+        if(!parsed)
+            failf("tic80ctl: invalid sfx %s payload", mode);
+        sb_append(&args, ",\"values\":");
+        append_json_int_array(&args, values, 30);
+        if(strcmp(mode, "pitch") == 0)
+            append_bool_json(&args, "pitch16x", pitch16x);
+        return build_and_send_tool(paths,
+                                   strcmp(mode, "volume") == 0 ? "sfx_set_volume_envelope"
+                                   : strcmp(mode, "wave") == 0 ? "sfx_set_wave_envelope"
+                                   : "sfx_set_pitch_envelope",
+                                   mode,
+                                   json_output,
+                                   &args);
+    }
+
+    if(strcmp(mode, "arpeggio") == 0)
+    {
+        int bank = -1;
+        bool reverse = false;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_bool_option(&argc, &argv, "--reverse", &reverse);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sfx_set_arpeggio", args_json, "sfx_arpeggio", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sfx arpeggio <sfx> [csv]");
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        if(argc == 1)
+            return build_and_send_tool(paths, "sfx_get_arpeggio", "sfx_arpeggio", json_output, &args);
+        int parsed[30];
+        int count = 0;
+        if(!parse_var_int_csv(argv[1], 0, 15, parsed, 30, &count))
+            failf("tic80ctl: invalid sfx arpeggio payload");
+        for(int i = count; i < 30; i++)
+            parsed[i] = parsed[count - 1];
+        sb_append(&args, ",\"values\":");
+        append_json_int_array(&args, parsed, 30);
+        append_bool_json(&args, "reverse", reverse);
+        return build_and_send_tool(paths, "sfx_set_arpeggio", "sfx_arpeggio", json_output, &args);
+    }
+
+    if(strcmp(mode, "panning") == 0)
+    {
+        int bank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sfx_set_panning", args_json, "sfx_panning", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sfx panning <sfx> [left,right]");
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        if(argc == 1)
+            return build_and_send_tool(paths, "sfx_get_panning", "sfx_panning", json_output, &args);
+        char* copy = strdup(argv[1]);
+        if(!copy) return 1;
+        char* save = NULL;
+        char* left_text = strtok_r(copy, ",", &save);
+        char* right_text = strtok_r(NULL, ",", &save);
+        bool left = false;
+        bool right = false;
+        bool ok = left_text && right_text && !strtok_r(NULL, ",", &save)
+            && parse_bool_token(left_text, &left)
+            && parse_bool_token(right_text, &right);
+        free(copy);
+        if(!ok)
+            failf("tic80ctl: invalid sfx panning payload");
+        append_bool_json(&args, "left", left);
+        append_bool_json(&args, "right", right);
+        return build_and_send_tool(paths, "sfx_set_panning", "sfx_panning", json_output, &args);
+    }
+
+    if(strcmp(mode, "speed") == 0)
+    {
+        int bank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sfx_set_speed", args_json, "sfx_speed", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sfx speed <sfx> [value]");
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        if(argc == 1)
+            return build_and_send_tool(paths, "sfx_get_speed", "sfx_speed", json_output, &args);
+        int speed = 0;
+        if(!parse_int_strict(argv[1], &speed))
+            failf("tic80ctl: invalid sfx speed: %s", argv[1]);
+        sb_appendf(&args, ",\"speed\":%d", speed);
+        return build_and_send_tool(paths, "sfx_set_speed", "sfx_speed", json_output, &args);
+    }
+
+    if(strcmp(mode, "loop") == 0)
+    {
+        int bank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sfx_set_loop_points", args_json, "sfx_loop", json_output);
+        if(argc < 2 || argc > 3)
+            failf("tic80ctl: sfx loop <sfx> <target> [start:size]");
+        int sfx = 0;
+        if(!parse_int_strict(argv[0], &sfx))
+            failf("tic80ctl: invalid sfx id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"sfx\":%d", sfx);
+        append_optional_int(&args, "bank", bank);
+        sb_append(&args, ",\"target\":");
+        sb_append_json_string(&args, argv[1]);
+        if(argc == 2)
+            return build_and_send_tool(paths, "sfx_get_loop_points", "sfx_loop", json_output, &args);
+        char* copy = strdup(argv[2]);
+        if(!copy) return 1;
+        char* colon = strchr(copy, ':');
+        int start = 0;
+        int size = 0;
+        bool ok = false;
+        if(colon)
+        {
+            *colon = '\0';
+            ok = parse_int_strict(copy, &start) && parse_int_strict(colon + 1, &size);
+        }
+        free(copy);
+        if(!ok)
+            failf("tic80ctl: invalid sfx loop payload, expected start:size");
+        sb_appendf(&args, ",\"start\":%d,\"size\":%d", start, size);
+        return build_and_send_tool(paths, "sfx_set_loop_points", "sfx_loop", json_output, &args);
+    }
+
+    failf("tic80ctl: unknown sfx subcommand: %s", mode);
+    return 1;
+}
+
+static int handle_music_command(const StatePaths* paths, int argc, char** argv, bool json_output)
+{
+    if(argc <= 0)
+        failf("tic80ctl: music requires a subcommand");
+
+    const char* mode = argv[0];
+    argc--;
+    argv++;
+
+    if(strcmp(mode, "track") == 0)
+    {
+        const char* args_json = NULL;
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "music_set_track", args_json, "music_track", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: music track <track> [tempo,speed,rows]");
+        int track = 0;
+        if(!parse_int_strict(argv[0], &track))
+            failf("tic80ctl: invalid track id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"track\":%d", track);
+        if(argc == 1)
+            return build_and_send_tool(paths, "music_get_track", "music_track", json_output, &args);
+        int values[3];
+        if(!parse_fixed_int_csv(argv[1], 3, 0, 999, values))
+            failf("tic80ctl: invalid music track payload");
+        sb_appendf(&args, ",\"tempo\":%d,\"speed\":%d,\"rows\":%d", values[0], values[1], values[2]);
+        return build_and_send_tool(paths, "music_set_track", "music_track", json_output, &args);
+    }
+
+    if(strcmp(mode, "frame") == 0)
+    {
+        const char* args_json = NULL;
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "music_set_frame", args_json, "music_frame", json_output);
+        if(argc < 2 || argc > 3)
+            failf("tic80ctl: music frame <track> <frame> [p0,p1,p2,p3]");
+        int track = 0;
+        int frame = 0;
+        if(!parse_int_strict(argv[0], &track) || !parse_int_strict(argv[1], &frame))
+            failf("tic80ctl: invalid music frame selector");
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"track\":%d,\"frame\":%d", track, frame);
+        if(argc == 2)
+            return build_and_send_tool(paths, "music_get_frame", "music_frame", json_output, &args);
+        sb_append(&args, ",\"patterns\":");
+        if(!append_frame_patterns_json(&args, argv[2]))
+        {
+            sb_free(&args);
+            failf("tic80ctl: invalid music frame payload");
+        }
+        return build_and_send_tool(paths, "music_set_frame", "music_frame", json_output, &args);
+    }
+
+    if(strcmp(mode, "row") == 0)
+    {
+        const char* args_json = NULL;
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "music_set_pattern_row", args_json, "music_row", json_output);
+        if(argc < 2 || argc > 3)
+            failf("tic80ctl: music row <pattern> <row> [note:sfx:cmd]");
+        int pattern = 0;
+        int row = 0;
+        if(!parse_int_strict(argv[0], &pattern) || !parse_int_strict(argv[1], &row))
+            failf("tic80ctl: invalid music row selector");
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"pattern\":%d,\"row\":%d", pattern, row);
+        if(argc == 2)
+            return build_and_send_tool(paths, "music_get_pattern_row", "music_row", json_output, &args);
+        StringBuilder row_args;
+        sb_init(&row_args);
+        if(!append_music_rows_json(&row_args, argv[2], true, row)
+            || !sb_append(&args, ",")
+            || !append_object_body(&args, row_args.data))
+        {
+            sb_free(&row_args);
+            sb_free(&args);
+            failf("tic80ctl: invalid music row payload");
+        }
+        sb_free(&row_args);
+        return build_and_send_tool(paths, "music_set_pattern_row", "music_row", json_output, &args);
+    }
+
+    if(strcmp(mode, "rows") == 0)
+    {
+        const char* args_json = NULL;
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "music_set_pattern_rows", args_json, "music_rows", json_output);
+        if(argc < 2 || argc > 2)
+            failf("tic80ctl: music rows <pattern> <row,row,...|row:note:sfx:cmd,...>");
+        int pattern = 0;
+        if(!parse_int_strict(argv[0], &pattern))
+            failf("tic80ctl: invalid music pattern id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"pattern\":%d", pattern);
+        if(strchr(argv[1], ':'))
+        {
+            StringBuilder rows_args;
+            sb_init(&rows_args);
+            if(!append_music_rows_json(&rows_args, argv[1], false, 0)
+                || !sb_append(&args, ",")
+                || !append_object_body(&args, rows_args.data))
+            {
+                sb_free(&rows_args);
+                sb_free(&args);
+                failf("tic80ctl: invalid music rows payload");
+            }
+            sb_free(&rows_args);
+            return build_and_send_tool(paths, "music_set_pattern_rows", "music_rows", json_output, &args);
+        }
+        int rows[64];
+        int row_count = 0;
+        if(!parse_var_int_csv(argv[1], 0, 63, rows, 64, &row_count))
+        {
+            sb_free(&args);
+            failf("tic80ctl: invalid music rows selector list");
+        }
+        sb_append(&args, ",\"rows\":");
+        append_json_int_array(&args, rows, row_count);
+        return build_and_send_tool(paths, "music_get_pattern_rows", "music_rows", json_output, &args);
+    }
+
+    failf("tic80ctl: unknown music subcommand: %s", mode);
+    return 1;
+}
+
+static int handle_sprite_command(const StatePaths* paths, int argc, char** argv, bool json_output)
+{
+    if(argc <= 0)
+        failf("tic80ctl: sprite requires a subcommand");
+
+    const char* mode = argv[0];
+    argc--;
+    argv++;
+
+    if(strcmp(mode, "tile") == 0)
+    {
+        const char* args_json = NULL;
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sprite_set_sprite", args_json, "sprite_tile", json_output);
+        if(argc < 1 || argc > 2)
+            failf("tic80ctl: sprite tile <id> [row0,...,row7]");
+        int id = 0;
+        if(!parse_int_strict(argv[0], &id))
+            failf("tic80ctl: invalid sprite id: %s", argv[0]);
+        StringBuilder args;
+        init_object_args(&args);
+        sb_appendf(&args, "\"id\":%d", id);
+        if(argc == 1)
+            return build_and_send_tool(paths, "sprite_get_sprite", "sprite_tile", json_output, &args);
+        sb_append(&args, ",\"rows\":");
+        if(!append_sprite_rows_json(&args, argv[1]))
+        {
+            sb_free(&args);
+            failf("tic80ctl: invalid sprite tile payload");
+        }
+        return build_and_send_tool(paths, "sprite_set_sprite", "sprite_tile", json_output, &args);
+    }
+
+    if(strcmp(mode, "region") == 0)
+    {
+        int bank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sprite_set_spritesheet_region", args_json, "sprite_region", json_output);
+        if(argc < 4 || argc > 5)
+            failf("tic80ctl: sprite region <x> <y> <width> <height> [tile;tile;...]");
+        int x = 0, y = 0, width = 0, height = 0;
+        if(!parse_int_strict(argv[0], &x) || !parse_int_strict(argv[1], &y) || !parse_int_strict(argv[2], &width) || !parse_int_strict(argv[3], &height))
+            failf("tic80ctl: invalid sprite region selector");
+        StringBuilder args;
+        init_object_args(&args);
+        if(bank >= 0) sb_appendf(&args, "\"bank\":%d,", bank);
+        sb_appendf(&args, "\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d", x, y, width, height);
+        if(argc == 4)
+            return build_and_send_tool(paths, "sprite_get_spritesheet_region", "sprite_region", json_output, &args);
+        sb_append(&args, ",\"sprites\":");
+        if(!append_region_sprites_json(&args, argv[4], width * height))
+        {
+            sb_free(&args);
+            failf("tic80ctl: invalid sprite region payload");
+        }
+        return build_and_send_tool(paths, "sprite_set_spritesheet_region", "sprite_region", json_output, &args);
+    }
+
+    if(strcmp(mode, "palette") == 0)
+    {
+        int bank = -1;
+        int vbank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_int_option(&argc, &argv, "--vbank", &vbank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+            return tool_request(paths, "sprite_set_palette", args_json, "sprite_palette", json_output);
+        if(argc > 1)
+            failf("tic80ctl: sprite palette [RRGGBB,...]");
+        StringBuilder args;
+        init_object_args(&args);
+        bool first = true;
+        if(bank >= 0)
+        {
+            sb_appendf(&args, "\"bank\":%d", bank);
+            first = false;
+        }
+        if(vbank >= 0)
+        {
+            if(!first) sb_append(&args, ",");
+            sb_appendf(&args, "\"vbank\":%d", vbank);
+            first = false;
+        }
+        if(argc == 0)
+            return build_and_send_tool(paths, "sprite_get_palette", "sprite_palette", json_output, &args);
+        if(!first) sb_append(&args, ",");
+        sb_append(&args, "\"colors\":");
+        if(!append_palette_json(&args, argv[0]))
+        {
+            sb_free(&args);
+            failf("tic80ctl: invalid sprite palette payload");
+        }
+        return build_and_send_tool(paths, "sprite_set_palette", "sprite_palette", json_output, &args);
+    }
+
+    failf("tic80ctl: unknown sprite subcommand: %s", mode);
+    return 1;
+}
+
+static int handle_map_command(const StatePaths* paths, int argc, char** argv, bool json_output)
+{
+    if(argc <= 0)
+        failf("tic80ctl: map requires a subcommand");
+
+    const char* mode = argv[0];
+    argc--;
+    argv++;
+
+    if(strcmp(mode, "rect") == 0 || strcmp(mode, "chunk") == 0)
+    {
+        int bank = -1;
+        const char* args_json = NULL;
+        consume_bank_option(&argc, &argv, &bank);
+        consume_args_json_option(&argc, &argv, &args_json);
+        if(args_json)
+        {
+            const char* tool = strcmp(mode, "rect") == 0 ? "map_set_rect" : "map_set_chunk";
+            return tool_request(paths, tool, args_json, tool, json_output);
+        }
+        if(argc < 4 || argc > 5)
+            failf("tic80ctl: map %s <x> <y> <width> <height> [payload]", mode);
+        int x = 0, y = 0, width = 0, height = 0;
+        if(!parse_int_strict(argv[0], &x) || !parse_int_strict(argv[1], &y) || !parse_int_strict(argv[2], &width) || !parse_int_strict(argv[3], &height))
+            failf("tic80ctl: invalid map selector");
+        StringBuilder args;
+        init_object_args(&args);
+        if(bank >= 0) sb_appendf(&args, "\"bank\":%d,", bank);
+        sb_appendf(&args, "\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d", x, y, width, height);
+        if(argc == 4)
+            return build_and_send_tool(paths, strcmp(mode, "rect") == 0 ? "map_get_rect" : "map_get_chunk", mode, json_output, &args);
+        if(strcmp(mode, "rect") == 0)
+        {
+            int tile = 0;
+            if(!parse_int_strict(argv[4], &tile))
+            {
+                sb_free(&args);
+                failf("tic80ctl: invalid map rect tile value");
+            }
+            sb_appendf(&args, ",\"tile\":%d", tile);
+            return build_and_send_tool(paths, "map_set_rect", "map_rect", json_output, &args);
+        }
+        int tiles[4096];
+        int count = 0;
+        if(!parse_var_int_csv(argv[4], 0, 65535, tiles, 4096, &count) || count != width * height)
+        {
+            sb_free(&args);
+            failf("tic80ctl: map chunk payload must contain width*height tile ids");
+        }
+        sb_append(&args, ",\"tiles\":");
+        append_json_int_array(&args, tiles, count);
+        return build_and_send_tool(paths, "map_set_chunk", "map_chunk", json_output, &args);
+    }
+
+    failf("tic80ctl: unknown map subcommand: %s", mode);
+    return 1;
+}
+
 int main(int argc, char** argv)
 {
     const char* argv0 = argv[0];
@@ -2280,6 +3311,18 @@ int main(int argc, char** argv)
         sb_free(&script);
         return rc;
     }
+
+    if(strcmp(subcommand, "sfx") == 0)
+        return handle_sfx_command(&paths, argc, argv, json_output);
+
+    if(strcmp(subcommand, "music") == 0)
+        return handle_music_command(&paths, argc, argv, json_output);
+
+    if(strcmp(subcommand, "sprite") == 0)
+        return handle_sprite_command(&paths, argc, argv, json_output);
+
+    if(strcmp(subcommand, "map") == 0)
+        return handle_map_command(&paths, argc, argv, json_output);
 
     print_usage();
     return 1;

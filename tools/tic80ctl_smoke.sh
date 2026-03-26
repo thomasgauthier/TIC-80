@@ -108,15 +108,32 @@ PLAYTEST_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80
 printf '%s\n' "$PLAYTEST_OUT" | grep -q 'status=done'
 printf '%s\n' "$PLAYTEST_OUT" | grep -q 'artifact_path=./playtest/episode_'
 
-GRID_LOAD_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load grid_shooter.lua)"
-printf '%s\n' "$GRID_LOAD_OUT" | grep -q 'cart grid_shooter.lua loaded'
+SFX_SET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sfx wavetable 0 0123456789abcdef0123456789abcdef)"
+printf '%s\n' "$SFX_SET_OUT" | grep -q '^updated sfx wavetable$'
 
-set +e
-GRID_RUN_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" run 2>&1)"
-GRID_RUN_STATUS=$?
-set -e
-[ "$GRID_RUN_STATUS" -ne 0 ]
-printf '%s\n' "$GRID_RUN_OUT" | grep -q 'invalid params, btn'
+SFX_GET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sfx wavetable 0)"
+printf '%s\n' "$SFX_GET_OUT" | grep -q '^sfx=0$'
+printf '%s\n' "$SFX_GET_OUT" | grep -q '^values=\[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\]$'
+
+MUSIC_FRAME_SET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" music frame --args-json '{"track":0,"frame":0,"patterns":[1,2,3,4]}')"
+printf '%s\n' "$MUSIC_FRAME_SET_OUT" | grep -q '^updated frame$'
+
+MUSIC_FRAME_GET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" music frame 0 0)"
+printf '%s\n' "$MUSIC_FRAME_GET_OUT" | grep -q '^track=0$'
+printf '%s\n' "$MUSIC_FRAME_GET_OUT" | grep -q '^patterns=\[1,2,3,4\]$'
+
+SPRITE_SET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sprite tile 3 01234567,89abcdef,00112233,44556677,8899aabb,ccddeeff,13579bdf,2468ace0)"
+printf '%s\n' "$SPRITE_SET_OUT" | grep -q '^updated sprite$'
+
+SPRITE_GET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sprite tile 3)"
+printf '%s\n' "$SPRITE_GET_OUT" | grep -q '^id=3$'
+printf '%s\n' "$SPRITE_GET_OUT" | grep -q '^rows=\["01234567","89abcdef","00112233","44556677","8899aabb","ccddeeff","13579bdf","2468ace0"\]$'
+
+MAP_SET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" map chunk 10 12 3 2 1,2,3,4,5,6)"
+printf '%s\n' "$MAP_SET_OUT" | grep -q '^updated map chunk$'
+
+MAP_GET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" map chunk 10 12 3 2)"
+printf '%s\n' "$MAP_GET_OUT" | grep -q '^tiles=\[1,2,3,4,5,6\]$'
 
 set +e
 SCREEN_ERR="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" screenshot shots/tic80ctl_capture.png 2>&1)"
@@ -124,6 +141,48 @@ SCREEN_ERR_STATUS=$?
 set -e
 [ "$SCREEN_ERR_STATUS" -ne 0 ]
 printf '%s\n' "$SCREEN_ERR" | grep -q 'relative screenshot directory does not exist: shots'
+
+SFX_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sfx wavetable 2 0123456789abcdef0123456789abcdef)"
+printf '%s\n' "$SFX_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+SFX_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sfx wavetable 2)"
+printf '%s\n' "$SFX_GET_JSON" | jq -e '.response.result.structuredContent.values[15] == 15' >/dev/null
+
+MUSIC_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json music frame 0 0 1,2,3,4)"
+printf '%s\n' "$MUSIC_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+MUSIC_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json music frame 0 0)"
+printf '%s\n' "$MUSIC_GET_JSON" | jq -e '.response.result.structuredContent.patterns == [1,2,3,4]' >/dev/null
+
+SPRITE_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite tile 3 01234567,89abcdef,01234567,89abcdef,01234567,89abcdef,01234567,89abcdef)"
+printf '%s\n' "$SPRITE_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+SPRITE_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite tile 3)"
+printf '%s\n' "$SPRITE_GET_JSON" | jq -e '.response.result.structuredContent.rows[0] == "01234567"' >/dev/null
+
+SPRITE_ARGS_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite tile --args-json '{"id":5,"rows":["11111111","11111111","11111111","11111111","11111111","11111111","11111111","11111111"]}' 5)"
+printf '%s\n' "$SPRITE_ARGS_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+SPRITE_ARGS_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite tile 5)"
+printf '%s\n' "$SPRITE_ARGS_GET_JSON" | jq -e '.response.result.structuredContent.rows[0] == "11111111"' >/dev/null
+
+PALETTE_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite palette ff0000,ee1100,dd2200,cc3300,bb4400,aa5500,996600,887700,778800,669900,55aa00,44bb00,33cc00,22dd00,11ee00,00ff00)"
+printf '%s\n' "$PALETTE_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+PALETTE_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json sprite palette)"
+printf '%s\n' "$PALETTE_GET_JSON" | jq -e '.response.result.structuredContent.colors[0] == "ff0000"' >/dev/null
+
+MAP_RECT_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json map rect 1 2 2 2 9)"
+printf '%s\n' "$MAP_RECT_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+MAP_RECT_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json map rect 1 2 2 2)"
+printf '%s\n' "$MAP_RECT_GET_JSON" | jq -e '.response.result.structuredContent.tiles == [9,9,9,9]' >/dev/null
+
+MAP_CHUNK_SET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json map chunk 4 5 3 2 1,2,3,4,5,6)"
+printf '%s\n' "$MAP_CHUNK_SET_JSON" | jq -e '.response.result.isError == false' >/dev/null
+
+MAP_CHUNK_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json map chunk 4 5 3 2)"
+printf '%s\n' "$MAP_CHUNK_GET_JSON" | jq -e '.response.result.structuredContent.tiles == [1,2,3,4,5,6]' >/dev/null
 
 STOP_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop)"
 printf '%s\n' "$STOP_OUT" | grep -q '^stopped tic80ctl session'

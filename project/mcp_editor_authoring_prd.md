@@ -550,6 +550,44 @@ Sparse mutation is more complex to implement than full replacement, but it match
 
 Those belong to the later shim PRD or follow-up design notes after MCP behavior is stable.
 
+## Implemented Stage 2 Shim Mapping
+
+The current `tic80ctl` shim exposes the editor MCP surface through domain groups:
+
+- `tic80ctl sfx ...`
+- `tic80ctl music ...`
+- `tic80ctl sprite ...`
+- `tic80ctl map ...`
+
+The shim keeps MCP as the semantic source of truth and uses merged getter/setter behavior by arity:
+
+- selector-only invocation performs the matching getter
+- selector plus compact payload performs the matching setter
+- `--args-json '<raw MCP arguments>'` is a setter escape hatch that bypasses compact payload parsing
+
+Compact CLI payloads intentionally stay Unix-friendly while mapping one-for-one onto the MCP request model:
+
+- SFX wavetable: `hex32`
+- SFX volume, wave, pitch: `tick:value,...`
+- SFX arpeggio: CSV semitone list
+- SFX panning: `left,right`
+- SFX speed: integer
+- SFX loop: `start:size`
+- music track: `tempo,speed,rows`
+- music frame: `p0,p1,p2,p3`
+- music row: `note:sfx:cmd`
+- music rows setter: `row:note:sfx:cmd,...`
+- sprite tile: comma-separated 8x8 hex rows
+- sprite region: semicolon-separated row-major tile payloads
+- sprite palette: comma-separated `RRGGBB` colors
+- map rect setter: single fill tile id
+- map chunk setter/getter: row-major CSV tile ids
+
+Getter behavior remains MCP-native:
+
+- `--json` returns the wrapped MCP result with `structuredContent`
+- plain output prints the getter's structured content directly for quick inspection
+
 ## Bottom Line
 
 The feature is a new MCP-native authoring API for TIC-80 editor content.

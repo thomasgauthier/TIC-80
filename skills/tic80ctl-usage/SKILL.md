@@ -1,191 +1,79 @@
 ---
 name: tic80ctl-usage
-description: Operate TIC-80 through the `tic80ctl` CLI. Use when Codex should manage a long-lived TIC-80 session from the shell, send console commands, capture screenshots, run playtest episodes, and iteratively build or debug TIC-80 games through the command-oriented interface.
+description: Use `tic80ctl` to start TIC-80, load and run carts, inspect a live game, edit cartridge content from the shell, and run scripted playtests while building games.
 ---
 
 # `tic80ctl` Usage
 
-Use `tic80ctl` as the command-oriented shell interface for TIC-80.
+Use `tic80ctl` when you want to work on a TIC-80 game from the shell.
 
-Treat it as:
+It is useful for:
 
-- a long-lived TIC-80 session manager
-- a command-line way to load, run, eval, screenshot, and playtest carts
-- a practical agent loop for building and refining TIC-80 games
+- starting and stopping a TIC-80 session
+- loading and running a cart
+- sending TIC-80 console commands
+- evaluating small Lua probes in the running cart
+- capturing screenshots
+- running scripted playtests
+- editing SFX, music, sprites, palette data, and map data
 
-`tic80ctl` does **not** invent its own gameplay semantics. It is a small command surface over TIC-80’s existing console, screenshot, and playtest capabilities.
+If you need the full command list or exact flags, run:
 
-This skill also depends on local references under `reference/`.
+```sh
+tic80ctl --help
+```
 
-Curated references:
+## Start Here
 
-- `reference/workflow_rationale.md`
-- `reference/scripted_playtest_guide.md`
-  - scripted playtest episode guide
+Good first-use sequence:
+
+```sh
+tic80ctl start
+tic80ctl load game.lua
+tic80ctl run
+tic80ctl eval "trace(type(TIC))"
+```
+
+That gives you:
+
+- one live TIC-80 session
+- your cart loaded
+- the cart runtime started
+- a quick proof that the runtime is alive
+
+After that, use:
+
+- `eval` for short probes
+- `screenshot` for one visual check
+- `playtest` for a multi-frame route
+- `sfx`, `music`, `sprite`, and `map` commands when you want to edit cartridge content
+
+## References
+
+This skill depends on local references under `reference/`.
+
+Useful references:
+
 - `reference/tic80_practical_workflow.md`
   - console, reload, external-editor, and multi-file workflow notes
+- `reference/scripted_playtest_guide.md`
+  - playtest episode usage and debugging
 - `reference/tic80_lua_api_quickref.md`
-  - high-frequency TIC-80 Lua API reminders for normal agent work
+  - quick reminders for common TIC-80 Lua APIs
 - `reference/official_tic80_learn_reference.md`
-  - official general TIC-80 reference sourced from `https://tic80.com/learn`
-
-Copied source references from `./tic80_general_documentation` are also available for targeted lookup:
-
-- `reference/source_tips_for_newcomers.md`
+  - broad TIC-80 reference, console commands, RAM layout, and API catalog
 - `reference/source_console.md`
 - `reference/source_reload.md`
 - `reference/source_external_editor.md`
-- `reference/source_splitting_projects.md`
 - `reference/source_require_workflow.md`
 - `reference/source_api.md`
 - `reference/source_api_cheatsheet.md`
 
-Treat those as first-class guidance when the task involves iterative playtesting, evidence-driven debugging, or designing episode-based validation loops.
+Use those when you need deeper TIC-80 behavior beyond the `tic80ctl` command surface itself.
 
-Read `reference/tic80_practical_workflow.md` when you need concrete TIC-80 console, reload, or external-editor workflow details rather than high-level iteration advice.
-Read `reference/tic80_lua_api_quickref.md` when you need fast reminders for the common Lua-side APIs used during gameplay iteration, probing, and debugging.
-Read `reference/official_tic80_learn_reference.md` when you want the official broad TIC-80 overview, specs, console commands, RAM layout, and built-in API catalog in one place.
-Use the copied source references when you need the original TIC-80 wording, examples, or caveats behind the curated guidance.
+## Session Commands
 
-## Core Design Philosophy
-
-Default to this loop:
-
-1. start or reuse one TIC-80 session
-2. set up the cart
-3. run one bounded experiment
-4. inspect the evidence
-5. revise
-6. repeat
-
-Do **not** default to many tiny ad hoc shell actions when one episode or one targeted command can answer the question.
-
-The best abstraction is usually:
-
-- “run one bounded experiment and inspect the resulting evidence”
-
-not:
-
-- “poke the runtime repeatedly until you think you understand it”
-
-## Game Development Approach
-
-Build small, finishable games instead of vague toy prototypes.
-
-Treat TIC-80 game work as four linked problems:
-
-1. pick a game that fits the scope
-2. encode the game as clear state and deterministic rules
-3. make the moment-to-moment play readable and satisfying
-4. verify it by actually running and playtesting it, not by inspection alone
-
-The closed loop is not just for debugging. It is the normal way to design, validate, and tighten the game.
-
-## Default Scope
-
-Start with a vertical slice that can be completed end to end:
-
-- one player verb set
-- one core loop
-- one failure state
-- one win condition
-- one short route or encounter sequence
-
-Expand only after that slice is playable.
-
-Good TIC-80-sized concepts:
-
-- top-down action rooms
-- arcade survival loops
-- lane-based dodge/collect games
-- simple platformers with a few authored jumps
-- micro stealth or chase games
-- score-attack puzzle/action hybrids
-
-Avoid starting with:
-
-- procedural worlds
-- deep inventory systems
-- large dialogue trees
-- heavy physics simulation
-- content-heavy RPG structures
-
-## Planning Pattern
-
-Before writing much code, define these concretely:
-
-- fantasy: what the player is doing in one sentence
-- verbs: move, jump, dash, shoot, interact, collect
-- loop: what repeats every few seconds
-- hazards: what creates pressure
-- progression: what must happen to reach the end
-- acceptance check: what a successful playtest must prove
-
-Prefer room-by-room or phase-by-phase progression over sprawling maps.
-The best `tic80ctl` playtest loops come from routes that can be named, scripted, and checked as explicit segments.
-
-## Design Strategies That Work Well
-
-Use these patterns by default:
-
-- build around a route the player can describe out loud
-- gate progression with readable obstacles
-- add one signature move only if it clearly improves the game
-- theme each room or phase so progress feels legible
-- let level data do most of the work
-
-Examples of good progression gates:
-
-- patrol timing
-- hazards
-- locked exits
-- key pickups
-- narrow traversal checks
-
-Good route descriptions sound like:
-
-- collect relic, cross lane, climb, cross top lane, drop, exit
-- start room, grab key, unlock gate, dodge patrol, reach door
-
-If the route is hard to describe, it is often also hard to test and hard to tune.
-
-## Feel And Readability
-
-TIC-80 games benefit more from clarity than from complexity.
-
-Priorities:
-
-- immediate input response
-- strong contrast between safe and dangerous space
-- visible player position at all times
-- obvious collectibles, goals, and exits
-- short HUD text with controls or objective
-- restart path that is fast and reliable
-
-Add juice selectively:
-
-- small camera shake or flash on hit
-- palette contrast between zones
-- tiny motion or blinking on goals
-- brief particles or rings for pickups
-- sound cues for success, danger, and failure
-
-Do not add polish before the route is proven playable.
-
-## Mental Model
-
-Separate these layers:
-
-1. session lifecycle
-2. cart lifecycle
-3. console command execution
-4. playtest episode execution
-
-Most mistakes come from mixing them.
-
-## Session Lifecycle
-
-V1 uses one long-lived default session.
+Use one long-lived session while iterating.
 
 Core commands:
 
@@ -193,286 +81,306 @@ Core commands:
 - `tic80ctl status`
 - `tic80ctl stop`
 
-The session persists enough metadata to support reconnect and inspection:
-
-- PID
-- cwd
-- stdout log path
-- stderr log path
-- launch mode
-
 ### `start`
 
-Use `start` to create the default session.
+Start TIC-80 from the project root you want to use as the TIC filesystem root.
 
-Examples:
+Example:
 
 ```sh
 tic80ctl start
 ```
 
-Behavior:
+Practical rules:
 
-- if no session exists, starts a durable TIC-80 session
-- `start` is session-only; load carts afterward with `load` or `cmd "load ..."`
-- uses the current working directory as the TIC filesystem root
-- uses a headless-safe launch path so the session survives after `start` exits
-
-Practical rule:
-
-- start the session from the project root you want TIC-80 to treat as its filesystem root
-- keep carts, screenshots, and any required Lua modules under that root
-- if paths behave strangely, inspect the effective root first
-
-If a session is already running, `start` should report that instead of spawning duplicates.
+- start from the repo or project root
+- keep carts, screenshots, and any Lua modules under that root
+- load carts after `start`
 
 ### `status`
 
-Use `status` to see whether the default session is alive.
+Check whether the session is alive.
 
-Examples:
+Example:
 
 ```sh
 tic80ctl status
-tic80ctl --json status
-tic80ctl status --json
 ```
-
-Human output is for readability. JSON output is for machine use.
 
 ### `stop`
 
-Use `stop` to end the default session.
+Stop the active session.
 
-Examples:
+Example:
 
 ```sh
 tic80ctl stop
-tic80ctl stop --json
 ```
 
-If no session is running, expect a clear error or stopped=false JSON response depending on mode.
+## Runtime Commands
 
-## Cart Lifecycle
+Use these while working on code and gameplay.
 
-Inside the running session, use TIC-80 commands with these meanings:
+### `cmd`
 
-- `load cart.lua`
-  - select the cart/project contents
-- `run`
-  - start the VM for the currently loaded cart
-- `eval ...`
-  - execute inside the running cart VM
-
-Do not assume `eval` creates the runtime by itself.
-If runtime probing behaves strangely, check the practical workflow reference first; the most common cause is that the cart has not been run yet.
-
-## Main Command Surface
-
-The main passthrough is:
-
-```sh
-tic80ctl cmd "<tic80 command>"
-```
-
-Use that for anything the fantasy editor console already supports.
-
-Convenience aliases:
-
-- `tic80ctl load <cart_path>`
-- `tic80ctl run`
-- `tic80ctl eval "<expr>"`
-- `tic80ctl screenshot [path]`
-- `tic80ctl playtest --script-file <file> ...`
-
-These aliases are only convenience wrappers around the same underlying `tic80ctl` session commands.
-
-## Output Modes
-
-Default:
-
-- human-readable text
-
-Optional:
-
-- `--json`
-
-`--json` may appear globally or immediately after the subcommand:
-
-```sh
-tic80ctl --json status
-tic80ctl status --json
-tic80ctl load --json main.lua
-```
-
-Important rule:
-
-- if the underlying command result is an error, `tic80ctl` exits nonzero
-
-That means shell exit codes are meaningful and should be checked in automation.
-
-## `cmd`
-
-Use `cmd` for raw TIC-80 console commands.
+Send a raw TIC-80 console command.
 
 Examples:
 
 ```sh
 tic80ctl cmd "help commands"
-tic80ctl cmd "load main.lua"
+tic80ctl cmd "load game.lua"
 tic80ctl cmd "run"
 tic80ctl cmd "eval trace(type(TIC))"
 ```
 
 Use `cmd` when:
 
-- you want console parity
-- you need a command without a dedicated alias
-- you are debugging or exploring interactively
+- you want exact console behavior
+- there is no dedicated shortcut for the command
+- you are exploring or debugging interactively
 
-Prefer aliases for the common cases because they are shorter and clearer.
+### `load`
 
-## `load`
-
-Alias for:
-
-```sh
-tic80ctl cmd "load <cart_path>"
-```
+Load a cart into the active session.
 
 Example:
 
 ```sh
-tic80ctl load carts/main.lua
+tic80ctl load game.lua
 ```
 
-Successful output should resemble TIC-80 console output:
+### `run`
 
-- cart loaded
-- reminder to use `run`
+Start the currently loaded cart.
 
-## `run`
-
-Alias for:
+Example:
 
 ```sh
-tic80ctl cmd "run"
+tic80ctl run
 ```
 
-Use it to start the currently loaded cart runtime.
+If this fails immediately, the cart likely hit a runtime error during its first frame.
 
-Important behavior:
+### `eval`
 
-- first-frame runtime errors can surface here
-- if the cart fails synchronously during the first run-mode frame, `tic80ctl run` should print the cart/runtime error and exit nonzero
+Run a short Lua expression in the active cart.
 
-Treat that as a real cart/runtime issue, not a CLI transport problem.
-
-## `eval`
-
-Alias for:
-
-```sh
-tic80ctl cmd "eval <expr>"
-```
-
-Use it for short runtime probes and mutations.
-
-Good probes:
+Examples:
 
 ```sh
 tic80ctl eval "trace(type(TIC))"
-tic80ctl eval "trace(frame)"
 tic80ctl eval "trace(player_x)"
+tic80ctl eval "trace(frame)"
 tic80ctl eval "some_flag = true"
 ```
 
-Prefer short payloads.
+Use `eval` for short runtime probes and toggles.
 
-Use `trace(...)` for machine-readable observations.
+Good habit:
 
-Do not assume `eval` can initialize the runtime by itself; call `run` first.
+- call `run` before relying on `eval`
 
-When debugging a deep-in-route bug, combine:
+### `screenshot`
 
-- reload-friendly state
-- `resume reload`
-- `trace(...)`
-- short `eval` probes
-
-That lets you patch code and continue from the current situation instead of replaying the whole route from the beginning.
-
-## `screenshot`
+Capture one frame.
 
 Examples:
 
 ```sh
 tic80ctl screenshot
 tic80ctl screenshot shots/frame.png
-tic80ctl screenshot --json shots/frame.png
 ```
 
 Important path rule:
 
-- paths are interpreted relative to the active TIC filesystem root (`./`)
+- screenshot paths are relative to the active TIC filesystem root
 - do not use absolute host paths
 
-Important behavior:
-
-- missing relative subdirectories produce a specific error
-
-Example:
-
-```sh
-tic80ctl screenshot shots/frame.png
-```
-
-If `shots/` does not exist, expect an error like:
-
-- `relative screenshot directory does not exist: shots`
+If the target subdirectory does not exist, create it first.
 
 Use screenshots for:
 
-- targeted visual confirmation
+- one visual confirmation
 - before/after checks
-- one-off inspection outside episode flow
+- quick inspection outside a full playtest
 
-Do not manually build long frame sequences with repeated `screenshot` calls when `playtest` is available.
+## Editing Cartridge Content
+
+`tic80ctl` can also edit cartridge data directly from the shell.
+
+Top-level content groups:
+
+- `tic80ctl sfx ...`
+- `tic80ctl music ...`
+- `tic80ctl sprite ...`
+- `tic80ctl map ...`
+
+Simple rule:
+
+- selector only reads current content
+- selector plus payload writes new content
+
+## SFX Commands
+
+Use SFX commands when shaping sound effects.
+
+Think about the SFX editor like this:
+
+1. `wavetable` sets the base waveform
+2. `arpeggio` and `pitch` change note movement over time
+3. `volume` shapes loudness over time
+4. `panning` places the sound left or right
+5. `speed` and `loop` control playback timing behavior
+
+Available commands:
+
+- `tic80ctl sfx wavetable <sfx> [hex32]`
+- `tic80ctl sfx volume <sfx> [tick:value,...]`
+- `tic80ctl sfx wave <sfx> [tick:value,...]`
+- `tic80ctl sfx arpeggio <sfx> [csv]`
+- `tic80ctl sfx pitch <sfx> [tick:value,...]`
+- `tic80ctl sfx panning <sfx> [left,right]`
+- `tic80ctl sfx speed <sfx> [value]`
+- `tic80ctl sfx loop <sfx> <target> [start:size]`
+
+Examples:
+
+```sh
+tic80ctl sfx wavetable 0
+tic80ctl sfx wavetable 0 0123456789abcdef0123456789abcdef
+
+tic80ctl sfx volume 0 0:15,8:8,31:0
+tic80ctl sfx pitch 0 0:12,31:-24
+tic80ctl sfx arpeggio 0 0,4,7,12
+tic80ctl sfx panning 0 true,false
+tic80ctl sfx speed 0 2
+tic80ctl sfx loop 0 pitch 3:5
+```
+
+Payload notes:
+
+- wavetable uses `32` hex digits
+- volume, wave, and pitch use `tick:value,...`
+- arpeggio uses comma-separated semitone values
+- panning uses `left,right` booleans
+- loop uses `start:size`
+
+## Music Commands
+
+Use music commands when editing tracker data.
+
+Available commands:
+
+- `tic80ctl music track <track> [tempo,speed,rows]`
+- `tic80ctl music frame <track> <frame> [p0,p1,p2,p3]`
+- `tic80ctl music row <pattern> <row> [note:sfx:cmd]`
+- `tic80ctl music rows <pattern> <rows>`
+
+Examples:
+
+```sh
+tic80ctl music track 0
+tic80ctl music track 0 140,5,64
+
+tic80ctl music frame 0 0
+tic80ctl music frame 0 0 1,2,3,4
+
+tic80ctl music row 1 5
+tic80ctl music row 1 5 C-4:2:F1a
+
+tic80ctl music rows 1 1,7,12
+tic80ctl music rows 1 1:C-4:2:F1a,7:OFF:-:-
+```
+
+Practical split:
+
+- use `track` and `frame` for song structure
+- use `row` and `rows` for note data inside patterns
+
+## Sprite And Palette Commands
+
+Use sprite commands for tile, region, and palette editing.
+
+Available commands:
+
+- `tic80ctl sprite tile <id> [row0,...,row7]`
+- `tic80ctl sprite region [--bank N] <x> <y> <width> <height> [tile;tile;...]`
+- `tic80ctl sprite palette [--bank N] [--vbank N] [RRGGBB,...]`
+
+Examples:
+
+```sh
+tic80ctl sprite tile 3
+tic80ctl sprite tile 3 01234567,89abcdef,01234567,89abcdef,01234567,89abcdef,01234567,89abcdef
+
+tic80ctl sprite region --bank 1 2 4 2 1
+tic80ctl sprite region --bank 1 2 4 2 1 01234567,89abcdef,01234567,89abcdef,01234567,89abcdef,01234567,89abcdef;fedcba98,76543210,fedcba98,76543210,fedcba98,76543210,fedcba98,76543210
+
+tic80ctl sprite palette
+tic80ctl sprite palette --bank 1 --vbank 1 000000,111111,222222,333333,444444,555555,666666,777777,888888,999999,aaaaaa,bbbbbb,cccccc,dddddd,eeeeee,ffffff
+```
+
+Payload notes:
+
+- sprite tiles use `8` rows of `8` hex digits
+- sprite regions use semicolon-separated tiles in row-major order
+- palette writes use `16` comma-separated `RRGGBB` colors
+
+## Map Commands
+
+Use map commands for level layout.
+
+Available commands:
+
+- `tic80ctl map rect [--bank N] <x> <y> <width> <height> [tile]`
+- `tic80ctl map chunk [--bank N] <x> <y> <width> <height> [csv]`
+
+Examples:
+
+```sh
+tic80ctl map rect 5 7 3 2
+tic80ctl map rect 5 7 3 2 9
+
+tic80ctl map chunk 10 12 3 2
+tic80ctl map chunk 10 12 3 2 1,2,3,4,5,6
+```
+
+Use:
+
+- `map rect` for broad fills
+- `map chunk` for local detail
+
+For `map chunk`, the payload must contain exactly `width*height` tile ids in row-major order.
 
 ## Text Cart Workflow
 
-For larger projects, prefer a real text-cart workflow over treating the cart as a tiny in-editor sketch forever.
+For larger projects, use a text-cart workflow.
 
 Good default:
 
-1. start `tic80ctl` from the repo or project root
-2. load a text cart such as `game.lua`
+1. `tic80ctl start`
+2. `tic80ctl load game.lua`
 3. edit code in an external editor
-4. use the live `tic80ctl` session for run, eval, screenshot, and playtest
-5. return to TIC-80 resource editors only when you need sprites, map, sfx, or music edits
+4. use `run`, `eval`, `screenshot`, and `playtest`
+5. return to asset commands only when you need to edit SFX, music, sprites, or the map
 
-Important habits:
+Helpful habits:
 
-- keep code changes at the top of text carts
-- avoid manually editing resource data blocks unless you mean to
-- avoid making unsaved changes in TIC resource editors and in an external editor at the same time
-- use `CTRL+O` inside TIC when you need quick structure navigation in a larger cart
+- keep one session alive while iterating
+- start from the project root
+- avoid editing the same asset in multiple places at once
+- use `reference/tic80_practical_workflow.md` if the project starts to grow
 
-If the project is growing, read `reference/tic80_practical_workflow.md` before improvising a custom setup.
+## Playtest
 
-## `playtest`
+Use `playtest` when you want to drive the game over many frames and inspect the result.
 
-Use it for scripted gameplay/control episodes.
+Syntax:
 
-Required:
-
-- `--script-file <file>`
-
-Optional:
-
-- `--timeout <seconds>`
-- `--input-overlay`
-- `--no-input-overlay`
+- `tic80ctl playtest --script-file <file>`
+- `tic80ctl playtest --script-file <file> --timeout <seconds>`
+- `tic80ctl playtest --script-file <file> --no-input-overlay`
 
 Examples:
 
@@ -481,83 +389,18 @@ tic80ctl playtest --script-file episode.lua
 tic80ctl playtest --script-file episode.lua --timeout 5 --no-input-overlay
 ```
 
-The command:
+Use playtest for:
 
-- runs the episode script in a separate episode-owned Lua state
-- drives the loaded cart through the existing runtime
-- captures one PNG per advanced frame
-- returns artifact paths and summary text
+- traversal routes
+- combat checks
+- progression checks
+- before/after proof runs
 
-Typical output includes:
-
-- `status=...`
-- `message=...`
-- `artifact_path=./playtest/episode_n`
-- `frames=...`
-
-## Playtesting Is Part Of The Work
-
-Never treat TIC-80 game work as complete until it has been run.
-
-Use the command surface with this priority:
-
-- use `load` and `run` to set up the cart
-- use `playtest` for traversal, combat, progression, and route validation
-- use `screenshot` only for targeted visual confirmation
-- use `eval` only for short runtime probes or toggles
-
-Prefer scripted episodes over ad hoc manual probing when validating gameplay.
-
-The default loop should be:
-
-1. plan the route or experiment
-2. encode it as a compact episode script
-3. run it once
-4. inspect the returned artifacts
-5. revise either the game or the script
-6. run again
-
-Do not model the task as “press buttons frame by frame across many unrelated shell turns” unless you are debugging a very narrow one-off interaction.
-
-### Playtest Pattern
-
-Create scripts that model a real route:
-
-- start game
-- hold directional input for known stretches
-- trigger action buttons at deliberate moments
-- log each segment with a short label
-- end with an explicit success or failure message
-
-This pattern is robust:
-
-```lua
-function hold(input, frames, label)
-  if label then log(label) end
-  for i=1,frames do
-    set_input(input)
-    frameadvance()
-  end
-  set_input({})
-end
-```
-
-Use named route segments in the log so failures are localized quickly.
-
-Examples:
-
-- `start game`
-- `cross first lane`
-- `collect key`
-- `climb to upper route`
-- `dash through final guard`
-- `reach exit`
+Prefer playtest over repeated one-frame shell pokes when the question spans multiple frames.
 
 ## Playtest Script API
 
-The episode script surface is intentionally small.
-
-Use only:
+Use only these functions in episode scripts:
 
 - `frameadvance()`
 - `set_input(input_table)`
@@ -569,16 +412,9 @@ Use only:
 
 Advance exactly one gameplay frame.
 
-This:
-
-- consumes the currently staged one-frame input
-- advances the cart one frame
-- captures the resulting frame artifact
-- increments the frame count
-
 ### `set_input(input_table)`
 
-Target player 1 by default.
+Set player 1 input for the next frame.
 
 Example:
 
@@ -589,7 +425,7 @@ frameadvance()
 
 ### `set_input(player_num, input_table)`
 
-Target another player explicitly.
+Set another player explicitly.
 
 Example:
 
@@ -598,7 +434,7 @@ set_input(2, {left=true, b=true})
 frameadvance()
 ```
 
-### Valid Button Names
+### Valid Buttons
 
 - `up`
 - `down`
@@ -609,19 +445,16 @@ frameadvance()
 - `x`
 - `y`
 
-### Input Semantics
-
-Remember:
+### Input Rules
 
 - unspecified buttons default to `false`
-- input is one-frame-only
+- input lasts for one frame
 - `set_input(...)` prepares the next frame
-- `frameadvance()` consumes that prepared input
-- input clears automatically after the frame
+- `frameadvance()` consumes that input
 
 ### `log(text)`
 
-Write script-authored route annotations to `log.txt`.
+Write a short label into the playtest log.
 
 Use it for:
 
@@ -631,7 +464,7 @@ Use it for:
 
 ### `end_episode(status, message)`
 
-Terminate the episode deliberately.
+End the episode deliberately.
 
 Examples:
 
@@ -641,11 +474,44 @@ end_episode("success", "reached exit")
 end_episode("failure", "player died")
 ```
 
+## Writing Good Playtests
+
+Write playtests as short named routes.
+
+Good pattern:
+
+- start game
+- move through a known segment
+- press actions at deliberate moments
+- log each segment
+- end with a success or failure message
+
+Example helper:
+
+```lua
+local function hold(input, frames, label)
+  if label then log(label) end
+  for i=1,frames do
+    set_input(input)
+    frameadvance()
+  end
+  set_input({})
+end
+```
+
+Example route labels:
+
+- `start game`
+- `cross first lane`
+- `collect key`
+- `climb to upper route`
+- `reach exit`
+
 ## `DEBUG_MODE` During Playtest
 
-For Lua carts only, `playtest` enables cart-side `DEBUG_MODE=true` for the duration of the episode and restores `DEBUG_MODE=nil` afterward.
+For Lua carts, `playtest` enables `DEBUG_MODE=true` during the episode and clears it afterward.
 
-This means cart code can include debug-only rendering or logging like:
+That is useful for debug-only rendering and tracing, for example:
 
 ```lua
 if DEBUG_MODE then
@@ -654,56 +520,18 @@ if DEBUG_MODE then
 end
 ```
 
-Important points:
+Good uses:
 
-- `DEBUG_MODE` exists in the cart runtime, not the episode script runtime
-- it is temporary
-- it is ideal for hitboxes, room ids, patrol paths, collision probes, camera zones, and debug-only `trace(...)`
-- later standalone screenshots after the episode should no longer show those debug visuals
+- hitboxes
+- room ids
+- patrol paths
+- collision probes
+- camera zones
+- debug-only `trace(...)`
 
-## Iteration Loop
+## Playtest Artifacts
 
-Follow this cycle:
-
-1. run the current cart
-2. playtest a realistic route
-3. inspect `log.txt`, `console.txt`, and a few targeted frames
-4. fix level layout first when traversal is broken
-5. change physics only if the intended design clearly demands it
-6. rerun the same route
-7. keep a stable passing script and one or more proof artifacts
-
-This ordering matters. Good TIC-80 iteration comes from fixing progression with evidence, not from making random feel tweaks and hoping the route improves.
-
-If a run matters, preserve it under durable names such as:
-
-- `playtest/full_clear_script.lua`
-- `playtest/full_clear_log.txt`
-- `playtest/full_clear_console.txt`
-- `playtest/full_clear_win.png`
-
-Treat a passing route as part of the deliverable, not just a temporary check.
-
-## Reporting Pattern
-
-When summarizing progress, anchor it in route evidence.
-
-Good pattern:
-
-- state the current finding plainly
-- choose one next probe
-- distinguish execution error from design error
-- preserve passing evidence once the route succeeds
-
-Examples of useful summaries:
-
-- the first realistic route failed before the next progression step, so inspect the key frames around that segment before changing movement code
-- the route now passes, so preserve the script and final proof artifacts under stable filenames
-- the issue is level geometry rather than timing sensitivity, so fix layout before touching jump tuning
-
-## Artifact Layout
-
-Expect:
+Expect output under:
 
 ```text
 playtest/
@@ -717,166 +545,48 @@ playtest/
       ...
 ```
 
-Interpretation:
+Meaning:
 
-- `script.lua`
-  - exact episode script that ran
-- `log.txt`
-  - script-authored `log(...)` output
-- `console.txt`
-  - cart-side `trace(...)` output during the episode
-- `screenshots/*.png`
-  - one screenshot per advanced frame
+- `script.lua` is the script that ran
+- `log.txt` contains `log(...)` output
+- `console.txt` contains cart-side `trace(...)` output
+- `screenshots/` contains one image per advanced frame
 
-The PNG filename is the frame number.
+## Troubleshooting
 
-## Building And Improving TIC-80 Games With `tic80ctl`
-
-Use `tic80ctl` not only for inspection, but as the default game-iteration loop.
-
-Think of TIC-80 game work as four linked problems:
-
-1. choose a finishable game scope
-2. encode clear deterministic rules
-3. make moment-to-moment play readable
-4. prove it by actually running and playtesting
-
-### Good Scope Defaults
-
-Prefer:
-
-- top-down action rooms
-- arcade survival loops
-- lane-based dodge/collect games
-- simple platformers
-- micro stealth or chase games
-
-Avoid starting with:
-
-- procedural worlds
-- deep inventory systems
-- large dialogue trees
-- heavy physics simulation
-- content-heavy RPG structures
-
-### Default Iteration Loop
-
-Use this sequence:
-
-1. `tic80ctl start`
-2. `tic80ctl load <cart>`
-3. `tic80ctl run` if needed
-4. run one `playtest` episode
-5. inspect `log.txt`, `console.txt`, and key frame PNGs
-6. revise the cart
-7. rerun the same route
-
-Do not rely on code inspection alone for gameplay issues.
-
-### Good Route Pattern
-
-Encode a route the player can describe out loud:
-
-- start game
-- cross first hazard
-- collect key
-- climb to upper route
-- reach exit
-
-This makes both design and debugging easier.
-
-### Example Hold Helper
-
-```lua
-local function hold(input, frames, label)
-  if label then log(label) end
-  for i=1,frames do
-    set_input(input)
-    frameadvance()
-  end
-end
-```
-
-### Example Baseline
-
-```lua
-log("baseline")
-frameadvance()
-end_episode("done", "baseline")
-```
-
-### Example Movement Segment
-
-```lua
-log("move right")
-for i=1,24 do
-  set_input({right=true})
-  frameadvance()
-end
-end_episode("done", "right movement complete")
-```
-
-### Example Debug Validation
-
-If the cart contains:
-
-```lua
-if DEBUG_MODE then
-  rectb(x-2, y-2, 20, 20, 2)
-  trace("debug on")
-end
-```
-
-then:
-
-```lua
-log("debug baseline")
-frameadvance()
-end_episode("done", "capture debug frame")
-```
-
-should produce:
-
-- debug-only visuals in the episode frame
-- matching `console.txt` lines
-
-## Failure Interpretation
-
-Use these heuristics:
+Useful interpretations:
 
 - `tic80ctl: no active session`
   - run `tic80ctl start`
 - `unknown command: ...`
-  - the console command is invalid, not the shim
-- synchronous error from `tic80ctl run`
+  - the console command itself is invalid
+- immediate error from `tic80ctl run`
   - the cart failed during its first run-mode frame
 - `path must be relative to the TIC filesystem root`
-  - invalid screenshot path
+  - the screenshot path is invalid
 - `relative screenshot directory does not exist: <dir>`
-  - target subdirectory missing
+  - create the target subdirectory first
 - `function` from `tic80ctl eval "trace(type(TIC))"`
-  - runtime exists
+  - the runtime exists
 - empty `console.txt`
   - the cart did not call `trace(...)` during the episode
 
-## Reliable Habits
+## Good Habits
 
 Use these consistently:
 
 - keep one session alive while iterating
-- use `load`, `run`, and `eval` for setup and probing
+- use `load`, `run`, and `eval` for setup and quick probes
 - use `playtest` for multi-frame questions
-- use cart-side `DEBUG_MODE` for playtest-only instrumentation
-- inspect returned artifact paths instead of guessing
+- use `screenshot` for one frame
+- inspect artifact paths instead of guessing
 - check shell exit codes in automation
-- use `--json` when another tool needs to parse the result
 
-## Practical Decision Rule
+## Quick Decision Rule
 
-Use this rule:
+Use this split:
 
-- if the task is “send one TIC-80 console command,” use `cmd` or an alias
-- if the task is “get one current frame,” use `screenshot`
-- if the task is “execute a plan over frames and inspect the artifact,” use `playtest`
-
-That is the main split.
+- one TIC-80 console command: `cmd` or an alias
+- one current frame: `screenshot`
+- one multi-frame route or experiment: `playtest`
+- edit cartridge content: `sfx`, `music`, `sprite`, or `map`

@@ -7,6 +7,7 @@ It does **not** define new gameplay or screenshot semantics. Instead, it reuses 
 - `run_command`
 - `capture_screenshot`
 - `run_playtest_episode`
+- editor authoring tools such as `sfx_*`, `music_*`, `sprite_*`, and `map_*`
 
 ## Design Intent
 
@@ -48,6 +49,36 @@ Convenience aliases:
 - `tic80ctl eval "<expr>"`
 - `tic80ctl screenshot [path]`
 - `tic80ctl playtest --script-file <file> ...`
+
+Editor domains:
+
+- `tic80ctl sfx <wavetable|volume|wave|arpeggio|pitch|panning|speed|loop> ...`
+- `tic80ctl music <track|frame|row|rows> ...`
+- `tic80ctl sprite <tile|region|palette> ...`
+- `tic80ctl map <rect|chunk> ...`
+
+The editor surface uses merged verbs by arity:
+
+- selector-only calls are getters
+- selector plus compact payload calls are setters
+- `--args-json '<raw MCP arguments>'` forces the setter path and bypasses compact payload parsing
+
+Compact payload conventions:
+
+- SFX wavetable: 32 hex nybbles
+- SFX volume/wave/pitch: `tick:value,...` keyframes expanded to 30 steps
+- SFX arpeggio: CSV semitone list, repeated to fill 30 steps
+- SFX panning: `left,right` booleans
+- SFX loop: `start:size`
+- music track: `tempo,speed,rows`
+- music frame: `p0,p1,p2,p3`
+- music row: `note:sfx:cmd`
+- music rows setter: `row:note:sfx:cmd,...`
+- sprite tile: `row0,row1,...,row7` where each row is 8 hex digits
+- sprite region: semicolon-separated tile payloads in row-major order
+- sprite palette: 16 comma-separated `RRGGBB` values
+- map chunk: row-major CSV tile ids
+- map rect setter: single fill tile id
 
 ## Runtime Launch
 
@@ -94,6 +125,7 @@ Default output should be human-readable text.
 
 - MCP `isError:true` -> nonzero shell exit
 - MCP text content -> printed output
+- editor getters without `--json` print the MCP `structuredContent` object directly for quick inspection
 
 ## Required Coverage
 
@@ -104,4 +136,6 @@ At minimum:
 - `load` / `run` / `eval`
 - `screenshot`
 - `playtest`
+- editor getters and setters across `sfx`, `music`, `sprite`, and `map`
+- `--args-json` setter passthrough for editor commands
 - propagation of MCP errors through shell exit status
