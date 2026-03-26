@@ -4869,6 +4869,18 @@ static EditorMode getRunCommandMode(Console* console)
         : TIC_START_MODE;
 }
 
+static void warmupRunCommandConsole(Console* console)
+{
+    if(console == NULL || console->studio == NULL)
+        return;
+
+    // MCP clients can issue a command immediately after startup. Advance a few
+    // frames so the studio leaves START mode before we process that first
+    // command; otherwise `load` can be swallowed by startup.
+    for(s32 i = 0; i < 120 && getStudioMode(console->studio) == TIC_START_MODE; i++)
+        studio_tick(console->studio, (tic80_input){0});
+}
+
 static const char* normalizeRunCommandErrorKind(bool recognized, bool commandErrorOccurred, const char* text)
 {
     if(text)
@@ -4980,6 +4992,9 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     bool previousMcpCommandActive = console->mcp.command.active;
     bool previousMcpCommandError = console->mcp.command.errorOccurred;
     tic_core* core = (tic_core*)console->tic;
+
+    warmupRunCommandConsole(console);
+
     EditorMode modeBefore = getStudioMode(console->studio);
     console->mcp.command.startMode = modeBefore;
     bool preserveRunScreen = console->mcp.command.startMode == TIC_RUN_MODE && console->tic != NULL;
