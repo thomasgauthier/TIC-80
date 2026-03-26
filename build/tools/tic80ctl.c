@@ -28,6 +28,7 @@
 
 #define STARTUP_TIMEOUT_MS 15000
 #define MCP_TIMEOUT_MS 10000
+#define MCP_PLAYTEST_DEFAULT_TIMEOUT_SECONDS 120
 
 typedef struct
 {
@@ -651,6 +652,36 @@ static bool json_get_long(const char* json, const char* key, long* out)
     return true;
 }
 
+static int tool_timeout_ms(const char* tool_name, const char* args_json)
+{
+    if(tool_name != NULL && strcmp(tool_name, "run_playtest_episode") == 0)
+    {
+        long timeout_seconds = MCP_PLAYTEST_DEFAULT_TIMEOUT_SECONDS;
+        long max_seconds = (LONG_MAX - MCP_TIMEOUT_MS) / 1000;
+
+        if(args_json != NULL)
+        {
+            long requested = 0;
+            if(json_get_long(args_json, "timeout_seconds", &requested))
+                timeout_seconds = requested;
+        }
+
+        if(timeout_seconds < 1)
+            timeout_seconds = 1;
+
+        if(timeout_seconds > max_seconds)
+            return INT_MAX;
+
+        long total_ms = timeout_seconds * 1000 + MCP_TIMEOUT_MS;
+        if(total_ms > INT_MAX)
+            return INT_MAX;
+
+        return (int)total_ms;
+    }
+
+    return MCP_TIMEOUT_MS;
+}
+
 static bool json_get_raw_value(const char* json, const char* key, char* out, size_t out_size)
 {
     const char* p = find_json_key(json, key);
@@ -1131,7 +1162,7 @@ static void respond_status(FILE* io, Server* server)
     sb_free(&sb);
 }
 
-static bool run_mcp_tool(Server* server, const char* name, const char* arguments_json, char* out, size_t out_size)
+static bool run_mcp_tool(Server* server, const char* name, const char* arguments_json, int timeout_ms, char* out, size_t out_size)
 {
     if(!child_is_running(server))
         return false;
@@ -1146,7 +1177,7 @@ static bool run_mcp_tool(Server* server, const char* name, const char* arguments
     sb_append(&params, "}");
 
     bool ok = send_jsonrpc(server, id, "tools/call", params.data ? params.data : "{}") &&
-              wait_for_mcp_response(server, id, MCP_TIMEOUT_MS, out, out_size);
+              wait_for_mcp_response(server, id, timeout_ms, out, out_size);
     sb_free(&params);
     return ok;
 }
@@ -1174,8 +1205,10 @@ static bool handle_tool_request(Server* server, FILE* io, const char* tool_name,
         snprintf(server->last_command, sizeof(server->last_command), "%s", tool_name);
     }
 
+    int timeout_ms = tool_timeout_ms(tool_name, args_json);
+
     char raw[262144];
-    if(!run_mcp_tool(server, tool_name, args_json, raw, sizeof(raw)))
+    if(!run_mcp_tool(server, tool_name, args_json, timeout_ms, raw, sizeof(raw)))
     {
         copy_last_nonempty_line(server->paths.stderr_log_path, server->last_stderr_tail, sizeof(server->last_stderr_tail));
         respond_error(io, child_is_running(server)

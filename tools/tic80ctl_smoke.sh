@@ -11,6 +11,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 SESSION_DIR="$(mktemp -d)"
 STATE_DIR="$SESSION_DIR/state"
 EPISODE_SCRIPT="$SESSION_DIR/episode.lua"
+TIMEOUT_EPISODE_SCRIPT="$SESSION_DIR/timeout_episode.lua"
 
 cleanup() {
   TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
@@ -23,6 +24,10 @@ cat > "$EPISODE_SCRIPT" <<'EOF'
 log("smoke")
 frameadvance()
 end_episode("done", "smoke")
+EOF
+cat > "$TIMEOUT_EPISODE_SCRIPT" <<'EOF'
+while true do
+end
 EOF
 EMPTY_CART="$SESSION_DIR/empty.lua"
 : > "$EMPTY_CART"
@@ -107,6 +112,17 @@ printf '%s\n' "$SCREEN_OUT" | grep -q 'saved screenshot: tic80ctl_capture.png'
 PLAYTEST_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" playtest --script-file "$EPISODE_SCRIPT")"
 printf '%s\n' "$PLAYTEST_OUT" | grep -q 'status=done'
 printf '%s\n' "$PLAYTEST_OUT" | grep -q 'artifact_path=./playtest/episode_'
+
+set +e
+PLAYTEST_TIMEOUT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" playtest --script-file "$TIMEOUT_EPISODE_SCRIPT" --timeout 11 2>&1)"
+PLAYTEST_TIMEOUT_STATUS=$?
+set -e
+[ "$PLAYTEST_TIMEOUT_STATUS" -ne 0 ]
+printf '%s\n' "$PLAYTEST_TIMEOUT_OUT" | grep -q '^status=timeout$'
+printf '%s\n' "$PLAYTEST_TIMEOUT_OUT" | grep -q '^message=playtest episode timed out$'
+if printf '%s\n' "$PLAYTEST_TIMEOUT_OUT" | grep -q 'timed out waiting for MCP response'; then
+  exit 1
+fi
 
 SFX_SET_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sfx wavetable 0 0123456789abcdef0123456789abcdef)"
 printf '%s\n' "$SFX_SET_OUT" | grep -q '^updated sfx wavetable$'
