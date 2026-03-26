@@ -10,6 +10,7 @@ BIN="$1"
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 SESSION_DIR="$(mktemp -d)"
 STATE_DIR="$SESSION_DIR/state"
+BAD_STATE_DIR="$SESSION_DIR/bad-state"
 EPISODE_SCRIPT="$SESSION_DIR/episode.lua"
 TIMEOUT_EPISODE_SCRIPT="$SESSION_DIR/timeout_episode.lua"
 
@@ -39,6 +40,14 @@ EOF
 
 START_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start)"
 printf '%s\n' "$START_OUT" | grep -q '^started tic80ctl session'
+
+set +e
+BAD_START_OUT="$(timeout 5s env TIC80CTL_STATE_DIR="$BAD_STATE_DIR" TIC80CTL_BIN="$SESSION_DIR/missing-tic80-bin" "$ROOT/tic80ctl" start 2>&1)"
+BAD_START_STATUS=$?
+set -e
+[ "$BAD_START_STATUS" -ne 0 ]
+[ "$BAD_START_STATUS" -ne 124 ]
+printf '%s\n' "$BAD_START_OUT" | grep -q '^tic80ctl:'
 
 STATUS_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" status)"
 printf '%s\n' "$STATUS_OUT" | grep -q '^running pid='

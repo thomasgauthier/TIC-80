@@ -26,9 +26,7 @@
 #define PATH_MAX 4096
 #endif
 
-#define STARTUP_TIMEOUT_MS 15000
-#define MCP_TIMEOUT_MS 10000
-#define MCP_PLAYTEST_DEFAULT_TIMEOUT_SECONDS 120
+#define POLL_INTERVAL_MS 100
 
 typedef struct
 {
@@ -437,6 +435,17 @@ static void sleep_ms(long ms)
         ;
 }
 
+static void write_startup_error_path(const char* state_dir, const char* message)
+{
+    if(state_dir == NULL || *state_dir == '\0' || message == NULL)
+        return;
+
+    StatePaths paths;
+    init_state_paths(&paths, state_dir);
+    mkdir_p(paths.state_dir);
+    write_text_file(paths.startup_error_path, message);
+}
+
 static char* last_nonempty_line(const char* path)
 {
     FILE* f = fopen(path, "r");
@@ -652,36 +661,6 @@ static bool json_get_long(const char* json, const char* key, long* out)
     return true;
 }
 
-static int tool_timeout_ms(const char* tool_name, const char* args_json)
-{
-    if(tool_name != NULL && strcmp(tool_name, "run_playtest_episode") == 0)
-    {
-        long timeout_seconds = MCP_PLAYTEST_DEFAULT_TIMEOUT_SECONDS;
-        long max_seconds = (LONG_MAX - MCP_TIMEOUT_MS) / 1000;
-
-        if(args_json != NULL)
-        {
-            long requested = 0;
-            if(json_get_long(args_json, "timeout_seconds", &requested))
-                timeout_seconds = requested;
-        }
-
-        if(timeout_seconds < 1)
-            timeout_seconds = 1;
-
-        if(timeout_seconds > max_seconds)
-            return INT_MAX;
-
-        long total_ms = timeout_seconds * 1000 + MCP_TIMEOUT_MS;
-        if(total_ms > INT_MAX)
-            return INT_MAX;
-
-        return (int)total_ms;
-    }
-
-    return MCP_TIMEOUT_MS;
-}
-
 static bool json_get_raw_value(const char* json, const char* key, char* out, size_t out_size)
 {
     const char* p = find_json_key(json, key);
@@ -786,7 +765,6 @@ static void write_startup_error(Server* server, const char* message)
 
 static void server_cleanup(Server* server)
 {
-    unlink_session_files(&server->paths);
     if(server->child_stdout)
     {
         fclose(server->child_stdout);
@@ -855,12 +833,11 @@ static bool line_has_matching_id(const char* line, int id)
     return strstr(line, pattern) != NULL;
 }
 
-static bool wait_for_mcp_response(Server* server, int id, int timeout_ms, char* out, size_t out_size)
+static bool wait_for_mcp_response(Server* server, int id, char* out, size_t out_size)
 {
     int fd = fileno(server->child_stdout);
-    int waited = 0;
 
-    while(waited < timeout_ms)
+    while(true)
     {
         if(!child_is_running(server))
             return false;
@@ -870,7 +847,7 @@ static bool wait_for_mcp_response(Server* server, int id, int timeout_ms, char* 
         FD_SET(fd, &set);
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 100000;
+        tv.tv_usec = POLL_INTERVAL_MS * 1000;
 
         int ready = select(fd + 1, &set, NULL, NULL, &tv);
         if(ready < 0)
@@ -880,10 +857,7 @@ static bool wait_for_mcp_response(Server* server, int id, int timeout_ms, char* 
         }
 
         if(ready == 0)
-        {
-            waited += 100;
             continue;
-        }
 
         char* line = NULL;
         size_t cap = 0;
@@ -1009,7 +983,7 @@ static bool mcp_initialize(Server* server)
                      "initialize",
                      "{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"tic80ctl\",\"version\":\"0\"}}"))
         return false;
-    if(!wait_for_mcp_response(server, init_id, MCP_TIMEOUT_MS, response, sizeof(response)))
+    if(!wait_for_mcp_response(server, init_id, response, sizeof(response)))
         return false;
 
     if(strstr(response, "\"result\"") == NULL || strstr(response, "\"serverInfo\"") == NULL)
@@ -1021,7 +995,7 @@ static bool mcp_initialize(Server* server)
     int tools_id = server->next_id++;
     if(!send_jsonrpc(server, tools_id, "tools/list", "{}"))
         return false;
-    if(!wait_for_mcp_response(server, tools_id, MCP_TIMEOUT_MS, response, sizeof(response)))
+    if(!wait_for_mcp_response(server, tools_id, response, sizeof(response)))
         return false;
 
     if(strstr(response, "\"run_command\"") == NULL || strstr(response, "\"capture_screenshot\"") == NULL)
@@ -1162,7 +1136,7 @@ static void respond_status(FILE* io, Server* server)
     sb_free(&sb);
 }
 
-static bool run_mcp_tool(Server* server, const char* name, const char* arguments_json, int timeout_ms, char* out, size_t out_size)
+static bool run_mcp_tool(Server* server, const char* name, const char* arguments_json, char* out, size_t out_size)
 {
     if(!child_is_running(server))
         return false;
@@ -1177,7 +1151,7 @@ static bool run_mcp_tool(Server* server, const char* name, const char* arguments
     sb_append(&params, "}");
 
     bool ok = send_jsonrpc(server, id, "tools/call", params.data ? params.data : "{}") &&
-              wait_for_mcp_response(server, id, timeout_ms, out, out_size);
+              wait_for_mcp_response(server, id, out, out_size);
     sb_free(&params);
     return ok;
 }
@@ -1205,10 +1179,8 @@ static bool handle_tool_request(Server* server, FILE* io, const char* tool_name,
         snprintf(server->last_command, sizeof(server->last_command), "%s", tool_name);
     }
 
-    int timeout_ms = tool_timeout_ms(tool_name, args_json);
-
     char raw[262144];
-    if(!run_mcp_tool(server, tool_name, args_json, timeout_ms, raw, sizeof(raw)))
+    if(!run_mcp_tool(server, tool_name, args_json, raw, sizeof(raw)))
     {
         copy_last_nonempty_line(server->paths.stderr_log_path, server->last_stderr_tail, sizeof(server->last_stderr_tail));
         respond_error(io, child_is_running(server)
@@ -1355,13 +1327,19 @@ static int server_main(const char* state_dir, const char* cwd, const char* tic80
 {
     Server server;
     if(!setup_server(&server, state_dir, cwd, tic80_bin, launch_command))
+    {
+        write_startup_error_path(state_dir, "tic80ctl: failed to initialize supervisor");
         return 1;
+    }
 
     if(chdir(cwd) != 0)
     {
         write_startup_error(&server, "tic80ctl: failed to enter session working directory");
         server_cleanup(&server);
-        unlink_session_files(&server.paths);
+        unlink(server.paths.pid_path);
+        unlink(server.paths.port_path);
+        unlink(server.paths.token_path);
+        unlink(server.paths.ready_path);
         return 1;
     }
 
@@ -1377,7 +1355,10 @@ static int server_main(const char* state_dir, const char* cwd, const char* tic80
             server.child_running = false;
         }
         server_cleanup(&server);
-        unlink_session_files(&server.paths);
+        unlink(server.paths.pid_path);
+        unlink(server.paths.port_path);
+        unlink(server.paths.token_path);
+        unlink(server.paths.ready_path);
         return 1;
     }
 
@@ -1450,6 +1431,8 @@ static int spawn_server_process(const char* self, const char* state_dir, const c
             execl(self, self, "--server", "--state-dir", state_dir, "--cwd", cwd, "--tic80-bin", tic80_bin, "--launch-command", launch_command, (char*)NULL);
         else
             execl(self, self, "--server", "--state-dir", state_dir, "--cwd", cwd, "--tic80-bin", tic80_bin, (char*)NULL);
+
+        write_startup_error_path(state_dir, "tic80ctl: failed to launch supervisor");
         _exit(127);
     }
 
@@ -1957,8 +1940,7 @@ static int start_session(const char* self_path_value, const StatePaths* paths, b
     if(spawn_server_process(self_path_value, paths->state_dir, cwd, tic80_bin, launch_command) != 0)
         return print_transport_error("tic80ctl: failed to launch supervisor");
 
-    int waited = 0;
-    while(waited < STARTUP_TIMEOUT_MS)
+    while(true)
     {
         if(file_exists(paths->startup_error_path))
         {
@@ -1999,12 +1981,8 @@ static int start_session(const char* self_path_value, const StatePaths* paths, b
             return 0;
         }
 
-        sleep_ms(100);
-        waited += 100;
+        sleep_ms(POLL_INTERVAL_MS);
     }
-
-    cleanup_stale_session(paths);
-    return print_transport_error("tic80ctl: session failed during startup");
 }
 
 static int status_session(const StatePaths* paths, bool json_output)
