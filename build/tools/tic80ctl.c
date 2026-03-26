@@ -996,7 +996,6 @@ static bool mcp_initialize(Server* server)
     if(strstr(response, "\"run_command\"") == NULL || strstr(response, "\"capture_screenshot\"") == NULL)
         return false;
 
-    sleep_ms(200);
     return child_is_running(server);
 }
 

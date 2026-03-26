@@ -184,6 +184,22 @@ printf '%s\n' "$MAP_CHUNK_SET_JSON" | jq -e '.response.result.isError == false' 
 MAP_CHUNK_GET_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json map chunk 4 5 3 2)"
 printf '%s\n' "$MAP_CHUNK_GET_JSON" | jq -e '.response.result.structuredContent.tiles == [1,2,3,4,5,6]' >/dev/null
 
+for attempt in 1 2 3; do
+  TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
+
+  RESTART_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start)"
+  printf '%s\n' "$RESTART_OUT" | grep -q '^started tic80ctl session'
+
+  RELOAD_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load "$RUN_OK_CART")"
+  printf '%s\n' "$RELOAD_OUT" | grep -q 'cart '
+
+  RERUN_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" run)"
+  printf '%s\n' "$RERUN_OUT" | grep -q '^run started$'
+
+  REEVAL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" eval "trace(type(TIC))")"
+  printf '%s\n' "$REEVAL_OUT" | grep -q 'function'
+done
+
 STOP_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop)"
 printf '%s\n' "$STOP_OUT" | grep -q '^stopped tic80ctl session'
 

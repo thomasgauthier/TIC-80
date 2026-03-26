@@ -736,6 +736,15 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
 
         if(strcmp(method, "notifications/initialized") == 0)
         {
+            if(mutex)
+            {
+                SDL_LockMutex(mutex);
+                studio_warmup_mcp(studio);
+                SDL_UnlockMutex(mutex);
+            }
+            else
+                studio_warmup_mcp(studio);
+
             freeMcpRequest(&request);
             continue;
         }

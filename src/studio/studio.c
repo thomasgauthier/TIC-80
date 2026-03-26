@@ -2620,6 +2620,21 @@ char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 ti
     return strdup("mcp playtest episode runner unavailable");
 }
 
+void studio_warmup_mcp(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    if(studio == NULL)
+        return;
+
+    // Advance startup frames during MCP initialization so the first external
+    // command arrives after the studio has left START mode.
+    for(s32 i = 0; i < 120 && getStudioMode(studio) == TIC_START_MODE; i++)
+        studio_tick(studio, (tic80_input){0});
+#else
+    TIC_UNUSED(studio);
+#endif
+}
+
 char* studio_editor_tools_json_mcp(void)
 {
 #if defined(BUILD_EDITORS)
