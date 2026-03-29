@@ -15,6 +15,8 @@ EPISODE_SCRIPT="$SESSION_DIR/episode.lua"
 TIMEOUT_EPISODE_SCRIPT="$SESSION_DIR/timeout_episode.lua"
 LINT_OK_CART="$SESSION_DIR/lint_ok.lua"
 LINT_BAD_CART="$SESSION_DIR/lint_bad_palette.lua"
+LINT_DUP_CART="$SESSION_DIR/lint_duplicate_palette.lua"
+LINT_LONG_CODE_CART="$SESSION_DIR/lint_long_code.lua"
 
 cleanup() {
   TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
@@ -52,6 +54,28 @@ end
 
 -- <PALETTE>
 -- 000:1a1c2c5d275d0f6f766b8f3ea7f070c05dd9a066f1e7a8fff8e6c86b4a7a3045c12c249fdeeed6a1cf6b8f
+-- </PALETTE>
+EOF
+cat > "$LINT_DUP_CART" <<'EOF'
+-- title:  lint dup
+-- script: lua
+
+function TIC()
+end
+
+-- <PALETTE>
+-- 000:1a1c2c5d275d0f6f763b5dc970c1f0a7f070f1c05dff8f5dff5d9cc2497f7a30454b1d27fdeeedfff8e68a6f452c5c49
+-- </PALETTE>
+
+-- <PALETTE>
+-- 001:000000111111222222333333444444555555666666777777888888999999aaaaaabbbbbbccccccddddddeeeeeeffffff
+-- </PALETTE>
+EOF
+head -c 524289 /dev/zero | tr '\0' 'a' > "$LINT_LONG_CODE_CART"
+printf '\n' >> "$LINT_LONG_CODE_CART"
+cat >> "$LINT_LONG_CODE_CART" <<'EOF'
+-- <PALETTE>
+-- 000:1a1c2c5d275d0f6f763b5dc970c1f0a7f070f1c05dff8f5dff5d9cc2497f7a30454b1d27fdeeedfff8e68a6f452c5c49
 -- </PALETTE>
 EOF
 EMPTY_CART="$SESSION_DIR/empty.lua"
@@ -98,6 +122,20 @@ set -e
 [ "$LINT_BAD_JSON_STATUS" -ne 0 ]
 printf '%s\n' "$LINT_BAD_JSON" | grep -q '"ok":false'
 printf '%s\n' "$LINT_BAD_JSON" | grep -q '"line":8'
+
+set +e
+LINT_DUP_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_DUP_CART" 2>&1)"
+LINT_DUP_STATUS=$?
+set -e
+[ "$LINT_DUP_STATUS" -ne 0 ]
+printf '%s\n' "$LINT_DUP_OUT" | grep -q 'duplicate section block <PALETTE>; TIC-80 text loader only reads the first block'
+
+set +e
+LINT_LONG_CODE_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_LONG_CODE_CART" 2>&1)"
+LINT_LONG_CODE_STATUS=$?
+set -e
+[ "$LINT_LONG_CODE_STATUS" -ne 0 ]
+printf '%s\n' "$LINT_LONG_CODE_OUT" | grep -q 'code before first tagged section is 524289 bytes; TIC-80 loader truncates at 524288'
 
 set +e
 BAD_START_OUT="$(timeout 5s env TIC80CTL_STATE_DIR="$BAD_STATE_DIR" TIC80CTL_BIN="$SESSION_DIR/missing-tic80-bin" "$ROOT/tic80ctl" start 2>&1)"

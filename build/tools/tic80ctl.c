@@ -463,6 +463,8 @@ static const ScriptCartSectionRule ScriptCartSections[] =
     {"LANG", 1, 2, 0},
 };
 
+static const size_t ScriptCartCodeCapacity = 64u * 1024u * 8u;
+
 static void failf(const char* fmt, ...)
 {
     va_list args;
@@ -731,6 +733,43 @@ static bool span_is_hex(const char* text, size_t len)
     return true;
 }
 
+static int line_number_for_offset(const char* text, const char* offset)
+{
+    int line = 1;
+    for(const char* ptr = text; ptr < offset; ptr++)
+        if(*ptr == '\n')
+            line++;
+
+    return line;
+}
+
+static size_t script_cart_code_length(const char* text, const char* comment, int* first_tag_line_out)
+{
+    char tag_start[32];
+    snprintf(tag_start, sizeof(tag_start), "\n%s <", comment);
+
+    const char* tag = strstr(text, tag_start);
+    if(tag)
+    {
+        if(first_tag_line_out)
+            *first_tag_line_out = line_number_for_offset(text, tag) + 1;
+        return (size_t)(tag - text);
+    }
+
+    if(first_tag_line_out)
+        *first_tag_line_out = 0;
+    return strlen(text);
+}
+
+static bool seen_section_tag(char seen[][32], int count, const char* tag)
+{
+    for(int i = 0; i < count; i++)
+        if(strcmp(seen[i], tag) == 0)
+            return true;
+
+    return false;
+}
+
 static void strip_cr_chars(char* text)
 {
     if(!text) return;
@@ -766,9 +805,22 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
 
     strip_cr_chars(text);
 
+    int first_tag_line = 0;
+    size_t code_length = script_cart_code_length(text, comment, &first_tag_line);
+    if(code_length > ScriptCartCodeCapacity)
+    {
+        if(first_tag_line > 0)
+            set_cart_lint_error(result, first_tag_line, "code before first tagged section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
+        else
+            set_cart_lint_error(result, 1, "code section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
+        return false;
+    }
+
     bool in_section = false;
     bool saw_row = false;
     bool seen_rows[256] = {0};
+    char seen_sections[128][32] = {{0}};
+    int seen_section_count = 0;
     char current_tag[32] = {0};
     const ScriptCartSectionRule* current_rule = NULL;
 
@@ -825,6 +877,14 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
                     set_cart_lint_error(result, line_no, "unknown or unsupported TIC-80 section tag <%s>", tag);
                     return false;
                 }
+
+                if(seen_section_tag(seen_sections, seen_section_count, tag))
+                {
+                    set_cart_lint_error(result, line_no, "duplicate section block <%s>; TIC-80 text loader only reads the first block", tag);
+                    return false;
+                }
+                else if(seen_section_count < (int)(sizeof(seen_sections) / sizeof(seen_sections[0])))
+                    snprintf(seen_sections[seen_section_count++], sizeof(seen_sections[0]), "%s", tag);
 
                 (void)bank;
                 snprintf(current_tag, sizeof(current_tag), "%s", tag);
