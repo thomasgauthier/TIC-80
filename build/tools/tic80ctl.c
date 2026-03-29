@@ -111,7 +111,7 @@ typedef struct
     bool ok;
     int line;
     char message[512];
-} CartLintResult;
+} LintResult;
 
 static const char* usage_text =
     "usage: tic80ctl [--json] <command> [args...]\n"
@@ -142,6 +142,8 @@ static const char* help_text =
     "runtime commands:\n"
     "  cmd \"...\"        send a raw TIC-80 console command\n"
     "  lint-cart <file>  validate TIC-80 script-cart structure before load\n"
+    "  lint-playtest-script <file>\n"
+    "                    validate a Lua playtest episode script offline\n"
     "  load <cart>       load a cart or script cart into the active session\n"
     "  run               start the loaded cart\n"
     "  eval \"<expr>\"    run a short Lua expression in the active runtime\n"
@@ -169,6 +171,7 @@ static const char* help_text =
     "help topics:\n"
     "  tic80ctl help start\n"
     "  tic80ctl help lint-cart\n"
+    "  tic80ctl help lint-playtest-script\n"
     "  tic80ctl help load\n"
     "  tic80ctl help run\n"
     "  tic80ctl help eval\n"
@@ -200,6 +203,21 @@ static const char* help_lint_cart_text =
     "  tic80ctl --json lint-cart game.lua\n"
     "\n"
     "Use this when a script cart load fails without a specific TIC-80 error.\n";
+
+static const char* help_lint_playtest_script_text =
+    "tic80ctl lint-playtest-script <file>\n"
+    "\n"
+    "Validate a Lua playtest episode script offline before you run `tic80ctl playtest`.\n"
+    "\n"
+    "This checks that the file looks like a playtest script instead of a TIC-80 cart, and catches\n"
+    "common route-authoring mistakes such as calling `set_input()` without ever advancing a frame.\n"
+    "\n"
+    "For explicit kind detection, add this near the top of the file:\n"
+    "  -- tic80ctl: playtest-script\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl lint-playtest-script episode.lua\n"
+    "  tic80ctl --json lint-playtest-script episode.lua\n";
 
 static const char* help_load_text =
     "tic80ctl load <cart>\n"
@@ -258,6 +276,8 @@ static const char* help_playtest_text =
     "Typical flow:\n"
     "  tic80ctl load game.lua\n"
     "  tic80ctl run\n"
+    "  # optional explicit marker inside episode.lua:\n"
+    "  # -- tic80ctl: playtest-script\n"
     "  tic80ctl playtest --script-file route.lua --timeout 20\n";
 
 static const char* help_sfx_text =
@@ -464,6 +484,7 @@ static const ScriptCartSectionRule ScriptCartSections[] =
 };
 
 static const size_t ScriptCartCodeCapacity = 64u * 1024u * 8u;
+static const char* PlaytestScriptMarker = "tic80ctl: playtest-script";
 
 static void failf(const char* fmt, ...)
 {
@@ -649,7 +670,7 @@ static void trim_span_end(const char** start, size_t* len)
     }
 }
 
-static void set_cart_lint_error(CartLintResult* result, int line, const char* fmt, ...)
+static void set_lint_error(LintResult* result, int line, const char* fmt, ...)
 {
     result->ok = false;
     result->line = line;
@@ -658,6 +679,55 @@ static void set_cart_lint_error(CartLintResult* result, int line, const char* fm
     va_start(args, fmt);
     vsnprintf(result->message, sizeof(result->message), fmt, args);
     va_end(args);
+}
+
+static bool line_has_call(const char* line, const char* name)
+{
+    size_t name_len = strlen(name);
+    const char* ptr = line;
+
+    while((ptr = strstr(ptr, name)) != NULL)
+    {
+        const char before = ptr > line ? ptr[-1] : '\0';
+        if((ptr == line || !(isalnum((unsigned char)before) || before == '_')))
+        {
+            const char* after = skip_spaces_inline(ptr + name_len);
+            if(*after == '(')
+                return true;
+        }
+
+        ptr += name_len;
+    }
+
+    return false;
+}
+
+static bool line_has_cart_callback(const char* line, char* callback, size_t callback_size)
+{
+    static const char* callbacks[] = {"TIC", "BOOT", "SCN", "OVR", "BDR", "MENU"};
+
+    const char* ptr = skip_spaces_inline(line);
+    if(strncmp(ptr, "function", 8) != 0 || !(ptr[8] == ' ' || ptr[8] == '\t'))
+        return false;
+
+    ptr = skip_spaces_inline(ptr + 8);
+
+    for(size_t i = 0; i < sizeof(callbacks) / sizeof(callbacks[0]); i++)
+    {
+        size_t len = strlen(callbacks[i]);
+        if(strncmp(ptr, callbacks[i], len) == 0)
+        {
+            const char* after = skip_spaces_inline(ptr + len);
+            if(*after == '(')
+            {
+                if(callback && callback_size > 0)
+                    snprintf(callback, callback_size, "%s", callbacks[i]);
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 static bool parse_tag_line(const char* line, const char* comment, bool* is_end_tag, char* tag, size_t tag_size)
@@ -785,21 +855,21 @@ static void strip_cr_chars(char* text)
     *dst = '\0';
 }
 
-static bool lint_script_cart_text(const char* path, char* text, CartLintResult* result)
+static bool lint_script_cart_text(const char* path, char* text, LintResult* result)
 {
     memset(result, 0, sizeof(*result));
     result->ok = true;
 
     if(!text || !text[0])
     {
-        set_cart_lint_error(result, 0, "file is empty");
+        set_lint_error(result, 0, "file is empty");
         return false;
     }
 
     const char* comment = script_cart_comment_for_path(path);
     if(!comment)
     {
-        set_cart_lint_error(result, 0, "unsupported script-cart extension; supported: .lua .moon .wasmp .js .nut .wren .py .rb .janet .scm .fnl");
+        set_lint_error(result, 0, "unsupported script-cart extension; supported: .lua .moon .wasmp .js .nut .wren .py .rb .janet .scm .fnl");
         return false;
     }
 
@@ -810,9 +880,9 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
     if(code_length > ScriptCartCodeCapacity)
     {
         if(first_tag_line > 0)
-            set_cart_lint_error(result, first_tag_line, "code before first tagged section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
+            set_lint_error(result, first_tag_line, "code before first tagged section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
         else
-            set_cart_lint_error(result, 1, "code section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
+            set_lint_error(result, 1, "code section is %zu bytes; TIC-80 loader truncates at %zu", code_length, ScriptCartCodeCapacity);
         return false;
     }
 
@@ -840,19 +910,19 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
             {
                 if(!in_section)
                 {
-                    set_cart_lint_error(result, line_no, "unexpected closing tag </%s>", tag);
+                    set_lint_error(result, line_no, "unexpected closing tag </%s>", tag);
                     return false;
                 }
 
                 if(strcmp(tag, current_tag) != 0)
                 {
-                    set_cart_lint_error(result, line_no, "closing tag </%s> does not match open section <%s>", tag, current_tag);
+                    set_lint_error(result, line_no, "closing tag </%s> does not match open section <%s>", tag, current_tag);
                     return false;
                 }
 
                 if(!saw_row)
                 {
-                    set_cart_lint_error(result, line_no, "section <%s> has no rows", current_tag);
+                    set_lint_error(result, line_no, "section <%s> has no rows", current_tag);
                     return false;
                 }
 
@@ -866,7 +936,7 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
             {
                 if(in_section)
                 {
-                    set_cart_lint_error(result, line_no, "nested section <%s> inside <%s>", tag, current_tag);
+                    set_lint_error(result, line_no, "nested section <%s> inside <%s>", tag, current_tag);
                     return false;
                 }
 
@@ -874,13 +944,13 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
                 current_rule = script_cart_section_rule(tag, &bank);
                 if(!current_rule)
                 {
-                    set_cart_lint_error(result, line_no, "unknown or unsupported TIC-80 section tag <%s>", tag);
+                    set_lint_error(result, line_no, "unknown or unsupported TIC-80 section tag <%s>", tag);
                     return false;
                 }
 
                 if(seen_section_tag(seen_sections, seen_section_count, tag))
                 {
-                    set_cart_lint_error(result, line_no, "duplicate section block <%s>; TIC-80 text loader only reads the first block", tag);
+                    set_lint_error(result, line_no, "duplicate section block <%s>; TIC-80 text loader only reads the first block", tag);
                     return false;
                 }
                 else if(seen_section_count < (int)(sizeof(seen_sections) / sizeof(seen_sections[0])))
@@ -901,31 +971,31 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
 
             if(!parse_section_row_line(line, comment, &row_index, &payload, &payload_len))
             {
-                set_cart_lint_error(result, line_no, "malformed row in section <%s>; expected `%s 000:<hex>`", current_tag, comment);
+                set_lint_error(result, line_no, "malformed row in section <%s>; expected `%s 000:<hex>`", current_tag, comment);
                 return false;
             }
 
             if(row_index < 0 || row_index >= current_rule->row_count)
             {
-                set_cart_lint_error(result, line_no, "section <%s> row %03d is out of range; expected 000-%03d", current_tag, row_index, current_rule->row_count - 1);
+                set_lint_error(result, line_no, "section <%s> row %03d is out of range; expected 000-%03d", current_tag, row_index, current_rule->row_count - 1);
                 return false;
             }
 
             if(seen_rows[row_index])
             {
-                set_cart_lint_error(result, line_no, "section <%s> row %03d is duplicated", current_tag, row_index);
+                set_lint_error(result, line_no, "section <%s> row %03d is duplicated", current_tag, row_index);
                 return false;
             }
 
             if((int)payload_len != current_rule->payload_hex_chars)
             {
-                set_cart_lint_error(result, line_no, "section <%s> row %03d has %zu hex chars; expected %d", current_tag, row_index, payload_len, current_rule->payload_hex_chars);
+                set_lint_error(result, line_no, "section <%s> row %03d has %zu hex chars; expected %d", current_tag, row_index, payload_len, current_rule->payload_hex_chars);
                 return false;
             }
 
             if(!span_is_hex(payload, payload_len))
             {
-                set_cart_lint_error(result, line_no, "section <%s> row %03d contains non-hex characters", current_tag, row_index);
+                set_lint_error(result, line_no, "section <%s> row %03d contains non-hex characters", current_tag, row_index);
                 return false;
             }
 
@@ -941,14 +1011,172 @@ static bool lint_script_cart_text(const char* path, char* text, CartLintResult* 
 
     if(in_section)
     {
-        set_cart_lint_error(result, line_no - 1, "section <%s> is missing closing tag </%s>", current_tag, current_tag);
+        set_lint_error(result, line_no - 1, "section <%s> is missing closing tag </%s>", current_tag, current_tag);
         return false;
     }
 
     return true;
 }
 
-static int print_lint_cart_json(const char* path, const CartLintResult* result)
+static bool lint_playtest_script_text(const char* path, char* text, LintResult* result)
+{
+    memset(result, 0, sizeof(*result));
+    result->ok = true;
+
+    if(!path || !path[0])
+    {
+        set_lint_error(result, 0, "lint-playtest-script requires a file path");
+        return false;
+    }
+
+    const char* dot = strrchr(path, '.');
+    if(!dot || strcmp(dot, ".lua") != 0)
+    {
+        set_lint_error(result, 0, "playtest scripts must be Lua files with a .lua extension");
+        return false;
+    }
+
+    if(!text || !text[0])
+    {
+        set_lint_error(result, 0, "file is empty");
+        return false;
+    }
+
+    strip_cr_chars(text);
+
+    bool explicit_marker = false;
+    bool saw_playtest_comment = false;
+    bool saw_cart_header = false;
+    bool saw_cart_section = false;
+    bool saw_cart_callback = false;
+    bool saw_frameadvance = false;
+    bool saw_set_input = false;
+    bool saw_log = false;
+    bool saw_end_episode = false;
+    int nonempty_lines = 0;
+    int cart_header_line = 0;
+    int cart_section_line = 0;
+    int cart_callback_line = 0;
+    int frameadvance_line = 0;
+    int set_input_line = 0;
+    char cart_section_tag[32] = {0};
+    char cart_callback_name[16] = {0};
+
+    int line_no = 1;
+    for(char* line = text; line; line_no++)
+    {
+        char* next = strchr(line, '\n');
+        if(next)
+            *next = '\0';
+
+        const char* trimmed = skip_spaces_inline(line);
+        if(*trimmed)
+            nonempty_lines++;
+
+        if(*trimmed)
+        {
+            if(nonempty_lines <= 8
+                && strncmp(trimmed, "--", 2) == 0
+                && strcasecmp(skip_spaces_inline(trimmed + 2), PlaytestScriptMarker) == 0)
+                explicit_marker = true;
+
+            if(!saw_cart_header
+                && strncmp(trimmed, "--", 2) == 0
+                && strncasecmp(skip_spaces_inline(trimmed + 2), "script:", 7) == 0)
+            {
+                saw_cart_header = true;
+                cart_header_line = line_no;
+            }
+
+            if(!saw_playtest_comment
+                && strncmp(trimmed, "--", 2) == 0
+                && strncasecmp(skip_spaces_inline(trimmed + 2), "playtest script", 15) == 0)
+                saw_playtest_comment = true;
+
+            if(!saw_cart_section)
+            {
+                bool is_end_tag = false;
+                if(parse_tag_line(trimmed, "--", &is_end_tag, cart_section_tag, sizeof(cart_section_tag)))
+                {
+                    saw_cart_section = true;
+                    cart_section_line = line_no;
+                }
+            }
+
+            if(!saw_cart_callback && line_has_cart_callback(trimmed, cart_callback_name, sizeof(cart_callback_name)))
+            {
+                saw_cart_callback = true;
+                cart_callback_line = line_no;
+            }
+
+            if(strncmp(trimmed, "--", 2) != 0)
+            {
+                if(!saw_frameadvance && line_has_call(trimmed, "frameadvance"))
+                {
+                    saw_frameadvance = true;
+                    frameadvance_line = line_no;
+                }
+
+                if(!saw_set_input && line_has_call(trimmed, "set_input"))
+                {
+                    saw_set_input = true;
+                    set_input_line = line_no;
+                }
+
+                if(!saw_log && line_has_call(trimmed, "log"))
+                    saw_log = true;
+
+                if(!saw_end_episode && line_has_call(trimmed, "end_episode"))
+                    saw_end_episode = true;
+            }
+        }
+
+        if(!next)
+            break;
+
+        line = next + 1;
+    }
+
+    if(saw_cart_header)
+    {
+        set_lint_error(result, cart_header_line, "looks like a TIC-80 script cart, not a playtest script; found `-- script:` header");
+        return false;
+    }
+
+    if(saw_cart_section)
+    {
+        set_lint_error(result, cart_section_line, "looks like a TIC-80 script cart, not a playtest script; found tagged section <%s>", cart_section_tag);
+        return false;
+    }
+
+    if(saw_cart_callback)
+    {
+        set_lint_error(result, cart_callback_line, "looks like a TIC-80 cart source file, not a playtest script; found callback function %s()", cart_callback_name);
+        return false;
+    }
+
+    if(saw_set_input && !saw_frameadvance)
+    {
+        set_lint_error(result, set_input_line, "uses set_input() but never calls frameadvance(); prepared input is only consumed when the episode advances a frame");
+        return false;
+    }
+
+    if(!explicit_marker && !saw_frameadvance && !saw_set_input && !saw_log && !saw_end_episode && !saw_playtest_comment)
+    {
+        set_lint_error(result, 1, "does not look like a TIC-80 playtest script; add `-- tic80ctl: playtest-script` near the top or use playtest APIs like frameadvance(), set_input(), log(), or end_episode()");
+        return false;
+    }
+
+    if(explicit_marker)
+        snprintf(result->message, sizeof(result->message), "lint ok");
+    else
+        snprintf(result->message, sizeof(result->message), "lint ok (heuristic playtest script; add `-- %s` near the top for explicit kind)", PlaytestScriptMarker);
+
+    (void)frameadvance_line;
+    return true;
+}
+
+static int print_lint_json(const char* path, const LintResult* result, const char* kind)
 {
     StringBuilder sb;
     sb_init(&sb);
@@ -961,7 +1189,8 @@ static int print_lint_cart_json(const char* path, const CartLintResult* result)
     sb_append_json_string(&sb, result->message[0] ? result->message : (result->ok ? "lint ok" : "lint failed"));
     if(result->line > 0)
         sb_appendf(&sb, ",\"line\":%d", result->line);
-    sb_append(&sb, ",\"kind\":\"script_cart\"");
+    sb_append(&sb, ",\"kind\":");
+    sb_append_json_string(&sb, kind);
     sb_append(&sb, "}\n");
     fputs(sb.data ? sb.data : "{}", stdout);
     sb_free(&sb);
@@ -974,9 +1203,9 @@ static int lint_cart_command(const char* path, bool json_output)
     {
         if(json_output)
         {
-            CartLintResult result = {.ok = false, .line = 0};
+            LintResult result = {.ok = false, .line = 0};
             snprintf(result.message, sizeof(result.message), "tic80ctl: lint-cart requires a file path");
-            return print_lint_cart_json("", &result);
+            return print_lint_json("", &result, "script_cart");
         }
 
         fprintf(stderr, "tic80ctl: lint-cart requires a file path\n");
@@ -986,16 +1215,16 @@ static int lint_cart_command(const char* path, bool json_output)
     char* text = read_text_file(path);
     if(!text)
     {
-        CartLintResult result = {.ok = false, .line = 0};
+        LintResult result = {.ok = false, .line = 0};
         snprintf(result.message, sizeof(result.message), "failed to read file: %s", strerror(errno));
         if(json_output)
-            return print_lint_cart_json(path, &result);
+            return print_lint_json(path, &result, "script_cart");
 
         fprintf(stderr, "lint failed: %s: %s\n", path, result.message);
         return 1;
     }
 
-    CartLintResult result;
+    LintResult result;
     bool ok = lint_script_cart_text(path, text, &result);
     free(text);
 
@@ -1003,11 +1232,59 @@ static int lint_cart_command(const char* path, bool json_output)
         snprintf(result.message, sizeof(result.message), "lint ok");
 
     if(json_output)
-        return print_lint_cart_json(path, &result);
+        return print_lint_json(path, &result, "script_cart");
 
     if(ok)
     {
         printf("lint ok: %s\n", path);
+        return 0;
+    }
+
+    if(result.line > 0)
+        fprintf(stderr, "lint failed: %s:%d: %s\n", path, result.line, result.message);
+    else
+        fprintf(stderr, "lint failed: %s: %s\n", path, result.message);
+
+    return 1;
+}
+
+static int lint_playtest_script_command(const char* path, bool json_output)
+{
+    if(!path || !path[0])
+    {
+        if(json_output)
+        {
+            LintResult result = {.ok = false, .line = 0};
+            snprintf(result.message, sizeof(result.message), "tic80ctl: lint-playtest-script requires a file path");
+            return print_lint_json("", &result, "playtest_script");
+        }
+
+        fprintf(stderr, "tic80ctl: lint-playtest-script requires a file path\n");
+        return 1;
+    }
+
+    char* text = read_text_file(path);
+    if(!text)
+    {
+        LintResult result = {.ok = false, .line = 0};
+        snprintf(result.message, sizeof(result.message), "failed to read file: %s", strerror(errno));
+        if(json_output)
+            return print_lint_json(path, &result, "playtest_script");
+
+        fprintf(stderr, "lint failed: %s: %s\n", path, result.message);
+        return 1;
+    }
+
+    LintResult result;
+    bool ok = lint_playtest_script_text(path, text, &result);
+    free(text);
+
+    if(json_output)
+        return print_lint_json(path, &result, "playtest_script");
+
+    if(ok)
+    {
+        printf("%s: %s\n", result.message[0] ? result.message : "lint ok", path);
         return 0;
     }
 
@@ -2278,6 +2555,7 @@ static const char* help_topic_text(const char* topic)
     if(!topic || !topic[0]) return help_text;
     if(strcmp(topic, "start") == 0) return help_start_text;
     if(strcmp(topic, "lint-cart") == 0) return help_lint_cart_text;
+    if(strcmp(topic, "lint-playtest-script") == 0) return help_lint_playtest_script_text;
     if(strcmp(topic, "load") == 0) return help_load_text;
     if(strcmp(topic, "run") == 0) return help_run_text;
     if(strcmp(topic, "eval") == 0) return help_eval_text;
@@ -3924,6 +4202,9 @@ int main(int argc, char** argv)
 
     if(strcmp(subcommand, "lint-cart") == 0)
         return lint_cart_command(argc > 0 ? argv[0] : NULL, json_output);
+
+    if(strcmp(subcommand, "lint-playtest-script") == 0)
+        return lint_playtest_script_command(argc > 0 ? argv[0] : NULL, json_output);
 
     if(strcmp(subcommand, "load") == 0)
     {

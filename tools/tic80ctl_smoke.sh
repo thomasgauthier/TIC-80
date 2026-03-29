@@ -17,6 +17,9 @@ LINT_OK_CART="$SESSION_DIR/lint_ok.lua"
 LINT_BAD_CART="$SESSION_DIR/lint_bad_palette.lua"
 LINT_DUP_CART="$SESSION_DIR/lint_duplicate_palette.lua"
 LINT_LONG_CODE_CART="$SESSION_DIR/lint_long_code.lua"
+LINT_OK_PLAYTEST="$SESSION_DIR/lint_playtest_ok.lua"
+LINT_HEURISTIC_PLAYTEST="$SESSION_DIR/lint_playtest_heuristic.lua"
+LINT_BAD_PLAYTEST="$SESSION_DIR/lint_playtest_bad.lua"
 
 cleanup() {
   TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
@@ -33,6 +36,28 @@ EOF
 cat > "$TIMEOUT_EPISODE_SCRIPT" <<'EOF'
 while true do
 end
+EOF
+cat > "$LINT_OK_PLAYTEST" <<'EOF'
+-- tic80ctl: playtest-script
+
+log("lint")
+frameadvance()
+end_episode("done", "lint")
+EOF
+cat > "$LINT_HEURISTIC_PLAYTEST" <<'EOF'
+local function hold(input, frames)
+  for i=1,frames do
+    set_input(input)
+    frameadvance()
+  end
+end
+
+hold({right=true}, 4)
+end_episode("done", "heuristic")
+EOF
+cat > "$LINT_BAD_PLAYTEST" <<'EOF'
+set_input({right=true})
+log("forgot to advance")
 EOF
 cat > "$LINT_OK_CART" <<'EOF'
 -- title:  lint ok
@@ -102,11 +127,24 @@ HELP_LINT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic8
 printf '%s\n' "$HELP_LINT_OUT" | grep -q '^tic80ctl lint-cart <file>$'
 printf '%s\n' "$HELP_LINT_OUT" | grep -q 'Validate a TIC-80 script cart offline before you try to load it.'
 
+HELP_PLAYTEST_LINT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help lint-playtest-script)"
+printf '%s\n' "$HELP_PLAYTEST_LINT_OUT" | grep -q '^tic80ctl lint-playtest-script <file>$'
+printf '%s\n' "$HELP_PLAYTEST_LINT_OUT" | grep -q 'Validate a Lua playtest episode script offline'
+
 LINT_OK_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_OK_CART")"
 printf '%s\n' "$LINT_OK_OUT" | grep -q "^lint ok: $LINT_OK_CART$"
 
 LINT_OK_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-cart "$LINT_OK_CART")"
 printf '%s\n' "$LINT_OK_JSON" | jq -e '.ok == true and .kind == "script_cart" and .message == "lint ok"' >/dev/null
+
+PLAYTEST_LINT_OK_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_OK_PLAYTEST")"
+printf '%s\n' "$PLAYTEST_LINT_OK_OUT" | grep -q "^lint ok: $LINT_OK_PLAYTEST$"
+
+PLAYTEST_LINT_OK_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-playtest-script "$LINT_OK_PLAYTEST")"
+printf '%s\n' "$PLAYTEST_LINT_OK_JSON" | jq -e '.ok == true and .kind == "playtest_script" and .message == "lint ok"' >/dev/null
+
+PLAYTEST_LINT_HEURISTIC_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_HEURISTIC_PLAYTEST")"
+printf '%s\n' "$PLAYTEST_LINT_HEURISTIC_OUT" | grep -q 'heuristic playtest script'
 
 set +e
 LINT_BAD_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_BAD_CART" 2>&1)"
@@ -129,6 +167,20 @@ LINT_DUP_STATUS=$?
 set -e
 [ "$LINT_DUP_STATUS" -ne 0 ]
 printf '%s\n' "$LINT_DUP_OUT" | grep -q 'duplicate section block <PALETTE>; TIC-80 text loader only reads the first block'
+
+set +e
+PLAYTEST_LINT_BAD_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_BAD_PLAYTEST" 2>&1)"
+PLAYTEST_LINT_BAD_STATUS=$?
+set -e
+[ "$PLAYTEST_LINT_BAD_STATUS" -ne 0 ]
+printf '%s\n' "$PLAYTEST_LINT_BAD_OUT" | grep -q 'uses set_input() but never calls frameadvance()'
+
+set +e
+PLAYTEST_LINT_CART_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_OK_CART" 2>&1)"
+PLAYTEST_LINT_CART_STATUS=$?
+set -e
+[ "$PLAYTEST_LINT_CART_STATUS" -ne 0 ]
+printf '%s\n' "$PLAYTEST_LINT_CART_OUT" | grep -q 'looks like a TIC-80 script cart'
 
 set +e
 LINT_LONG_CODE_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_LONG_CODE_CART" 2>&1)"
