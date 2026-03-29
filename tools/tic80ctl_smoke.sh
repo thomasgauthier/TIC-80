@@ -13,6 +13,8 @@ STATE_DIR="$SESSION_DIR/state"
 BAD_STATE_DIR="$SESSION_DIR/bad-state"
 EPISODE_SCRIPT="$SESSION_DIR/episode.lua"
 TIMEOUT_EPISODE_SCRIPT="$SESSION_DIR/timeout_episode.lua"
+LINT_OK_CART="$SESSION_DIR/lint_ok.lua"
+LINT_BAD_CART="$SESSION_DIR/lint_bad_palette.lua"
 
 cleanup() {
   TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" stop >/dev/null 2>&1 || true
@@ -29,6 +31,28 @@ EOF
 cat > "$TIMEOUT_EPISODE_SCRIPT" <<'EOF'
 while true do
 end
+EOF
+cat > "$LINT_OK_CART" <<'EOF'
+-- title:  lint ok
+-- script: lua
+
+function TIC()
+end
+
+-- <PALETTE>
+-- 000:1a1c2c5d275d0f6f763b5dc970c1f0a7f070f1c05dff8f5dff5d9cc2497f7a30454b1d27fdeeedfff8e68a6f452c5c49
+-- </PALETTE>
+EOF
+cat > "$LINT_BAD_CART" <<'EOF'
+-- title:  lint bad
+-- script: lua
+
+function TIC()
+end
+
+-- <PALETTE>
+-- 000:1a1c2c5d275d0f6f766b8f3ea7f070c05dd9a066f1e7a8fff8e6c86b4a7a3045c12c249fdeeed6a1cf6b8f
+-- </PALETTE>
 EOF
 EMPTY_CART="$SESSION_DIR/empty.lua"
 : > "$EMPTY_CART"
@@ -49,6 +73,31 @@ printf '%s\n' "$HELP_OUT" | grep -q '^  tic80ctl eval "trace(type(TIC))"$'
 HELP_TOPIC_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help playtest)"
 printf '%s\n' "$HELP_TOPIC_OUT" | grep -q '^tic80ctl playtest --script-file <file>'
 printf '%s\n' "$HELP_TOPIC_OUT" | grep -q 'artifacts are written under ./playtest/episode_N/'
+
+HELP_LINT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help lint-cart)"
+printf '%s\n' "$HELP_LINT_OUT" | grep -q '^tic80ctl lint-cart <file>$'
+printf '%s\n' "$HELP_LINT_OUT" | grep -q 'Validate a TIC-80 script cart offline before you try to load it.'
+
+LINT_OK_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_OK_CART")"
+printf '%s\n' "$LINT_OK_OUT" | grep -q "^lint ok: $LINT_OK_CART$"
+
+LINT_OK_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-cart "$LINT_OK_CART")"
+printf '%s\n' "$LINT_OK_JSON" | jq -e '.ok == true and .kind == "script_cart" and .message == "lint ok"' >/dev/null
+
+set +e
+LINT_BAD_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_BAD_CART" 2>&1)"
+LINT_BAD_STATUS=$?
+set -e
+[ "$LINT_BAD_STATUS" -ne 0 ]
+printf '%s\n' "$LINT_BAD_OUT" | grep -q "section <PALETTE> row 000 has 86 hex chars; expected 96"
+
+set +e
+LINT_BAD_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-cart "$LINT_BAD_CART" 2>&1)"
+LINT_BAD_JSON_STATUS=$?
+set -e
+[ "$LINT_BAD_JSON_STATUS" -ne 0 ]
+printf '%s\n' "$LINT_BAD_JSON" | grep -q '"ok":false'
+printf '%s\n' "$LINT_BAD_JSON" | grep -q '"line":8'
 
 set +e
 BAD_START_OUT="$(timeout 5s env TIC80CTL_STATE_DIR="$BAD_STATE_DIR" TIC80CTL_BIN="$SESSION_DIR/missing-tic80-bin" "$ROOT/tic80ctl" start 2>&1)"

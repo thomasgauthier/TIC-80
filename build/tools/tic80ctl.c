@@ -92,6 +92,27 @@ typedef struct
     bool stopped;
 } ServerResponse;
 
+typedef struct
+{
+    const char* ext;
+    const char* comment;
+} ScriptCartCommentRule;
+
+typedef struct
+{
+    const char* tag;
+    int row_count;
+    int payload_hex_chars;
+    int max_bank;
+} ScriptCartSectionRule;
+
+typedef struct
+{
+    bool ok;
+    int line;
+    char message[512];
+} CartLintResult;
+
 static const char* usage_text =
     "usage: tic80ctl [--json] <command> [args...]\n"
     "\n"
@@ -120,6 +141,7 @@ static const char* help_text =
     "\n"
     "runtime commands:\n"
     "  cmd \"...\"        send a raw TIC-80 console command\n"
+    "  lint-cart <file>  validate TIC-80 script-cart structure before load\n"
     "  load <cart>       load a cart or script cart into the active session\n"
     "  run               start the loaded cart\n"
     "  eval \"<expr>\"    run a short Lua expression in the active runtime\n"
@@ -146,6 +168,7 @@ static const char* help_text =
     "\n"
     "help topics:\n"
     "  tic80ctl help start\n"
+    "  tic80ctl help lint-cart\n"
     "  tic80ctl help load\n"
     "  tic80ctl help run\n"
     "  tic80ctl help eval\n"
@@ -164,6 +187,20 @@ static const char* help_start_text =
     "Use this from the repo or project root you want TIC-80 to treat as its filesystem root.\n"
     "Load carts after start.\n";
 
+static const char* help_lint_cart_text =
+    "tic80ctl lint-cart <file>\n"
+    "\n"
+    "Validate a TIC-80 script cart offline before you try to load it.\n"
+    "\n"
+    "This checks tagged resource sections such as PALETTE, MAP, SCREEN, SFX, and others\n"
+    "for malformed tags, row syntax, duplicate rows, non-hex payloads, and wrong payload lengths.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl lint-cart game.lua\n"
+    "  tic80ctl --json lint-cart game.lua\n"
+    "\n"
+    "Use this when a script cart load fails without a specific TIC-80 error.\n";
+
 static const char* help_load_text =
     "tic80ctl load <cart>\n"
     "\n"
@@ -174,7 +211,9 @@ static const char* help_load_text =
     "  tic80ctl load game.tic\n"
     "\n"
     "For script carts, keep code near the top of the file and leave tagged resource blocks alone\n"
-    "unless you intentionally edit them.\n";
+    "unless you intentionally edit them.\n"
+    "\n"
+    "If a script cart load does not confirm cleanly, run `tic80ctl lint-cart <file>` first.\n";
 
 static const char* help_run_text =
     "tic80ctl run\n"
@@ -394,6 +433,36 @@ static int hex_value(char c)
     return -1;
 }
 
+static const ScriptCartCommentRule ScriptCartComments[] =
+{
+    {".lua", "--"},
+    {".moon", "--"},
+    {".wasmp", "--"},
+    {".js", "//"},
+    {".nut", "//"},
+    {".wren", "//"},
+    {".py", "#"},
+    {".rb", "#"},
+    {".janet", "#"},
+    {".scm", ";;"},
+    {".fnl", ";;"},
+};
+
+static const ScriptCartSectionRule ScriptCartSections[] =
+{
+    {"TILES", 256, 64, 7},
+    {"SPRITES", 256, 64, 7},
+    {"MAP", 136, 480, 7},
+    {"WAVES", 16, 32, 7},
+    {"SFX", 64, 132, 7},
+    {"PATTERNS", 60, 384, 7},
+    {"TRACKS", 8, 102, 7},
+    {"FLAGS", 2, 512, 7},
+    {"SCREEN", 136, 240, 7},
+    {"PALETTE", 2, 96, 7},
+    {"LANG", 1, 2, 0},
+};
+
 static void failf(const char* fmt, ...)
 {
     va_list args;
@@ -487,6 +556,407 @@ static char* read_text_file_trimmed(const char* path)
         sb.data[--sb.len] = '\0';
 
     return sb.data ? sb.data : strdup("");
+}
+
+static char* read_text_file(const char* path)
+{
+    FILE* f = fopen(path, "r");
+    if(!f) return NULL;
+
+    StringBuilder sb;
+    sb_init(&sb);
+
+    char buffer[4096];
+    while(fgets(buffer, sizeof(buffer), f))
+    {
+        if(!sb_append(&sb, buffer))
+        {
+            fclose(f);
+            sb_free(&sb);
+            return NULL;
+        }
+    }
+
+    if(ferror(f))
+    {
+        fclose(f);
+        sb_free(&sb);
+        return NULL;
+    }
+
+    fclose(f);
+    return sb.data ? sb.data : strdup("");
+}
+
+static const char* script_cart_comment_for_path(const char* path)
+{
+    const char* dot = strrchr(path, '.');
+    if(!dot) return NULL;
+
+    for(size_t i = 0; i < sizeof(ScriptCartComments) / sizeof(ScriptCartComments[0]); i++)
+        if(strcmp(dot, ScriptCartComments[i].ext) == 0)
+            return ScriptCartComments[i].comment;
+
+    return NULL;
+}
+
+static const ScriptCartSectionRule* script_cart_section_rule(const char* tag, int* bank_out)
+{
+    char base[32];
+    size_t base_len = strcspn(tag, "0123456789");
+    if(base_len == 0 || base_len >= sizeof(base)) return NULL;
+
+    memcpy(base, tag, base_len);
+    base[base_len] = '\0';
+
+    const char* suffix = tag + base_len;
+    int bank = 0;
+
+    if(*suffix)
+    {
+        if(!parse_int_strict(suffix, &bank) || bank < 1 || bank > 7)
+            return NULL;
+    }
+
+    for(size_t i = 0; i < sizeof(ScriptCartSections) / sizeof(ScriptCartSections[0]); i++)
+        if(strcmp(base, ScriptCartSections[i].tag) == 0)
+        {
+            if(bank > ScriptCartSections[i].max_bank)
+                return NULL;
+            if(bank_out) *bank_out = bank;
+            return &ScriptCartSections[i];
+        }
+
+    return NULL;
+}
+
+static const char* skip_spaces_inline(const char* ptr)
+{
+    while(*ptr == ' ' || *ptr == '\t') ptr++;
+    return ptr;
+}
+
+static void trim_span_end(const char** start, size_t* len)
+{
+    while(*len > 0)
+    {
+        char c = (*start)[*len - 1];
+        if(c != ' ' && c != '\t' && c != '\r')
+            break;
+        (*len)--;
+    }
+}
+
+static void set_cart_lint_error(CartLintResult* result, int line, const char* fmt, ...)
+{
+    result->ok = false;
+    result->line = line;
+
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(result->message, sizeof(result->message), fmt, args);
+    va_end(args);
+}
+
+static bool parse_tag_line(const char* line, const char* comment, bool* is_end_tag, char* tag, size_t tag_size)
+{
+    size_t comment_len = strlen(comment);
+    if(strncmp(line, comment, comment_len) != 0 || line[comment_len] != ' ')
+        return false;
+
+    const char* ptr = line + comment_len + 1;
+    if(*ptr != '<')
+        return false;
+
+    ptr++;
+    bool end_tag = false;
+    if(*ptr == '/')
+    {
+        end_tag = true;
+        ptr++;
+    }
+
+    const char* tag_start = ptr;
+    while((*ptr >= 'A' && *ptr <= 'Z') || (*ptr >= '0' && *ptr <= '9'))
+        ptr++;
+
+    if(ptr == tag_start || *ptr != '>')
+        return false;
+
+    size_t tag_len = (size_t)(ptr - tag_start);
+    if(tag_len >= tag_size)
+        return false;
+
+    memcpy(tag, tag_start, tag_len);
+    tag[tag_len] = '\0';
+    ptr++;
+    ptr = skip_spaces_inline(ptr);
+
+    if(*ptr != '\0')
+        return false;
+
+    if(is_end_tag) *is_end_tag = end_tag;
+    return true;
+}
+
+static bool parse_section_row_line(const char* line, const char* comment, int* index_out, const char** payload_out, size_t* payload_len_out)
+{
+    size_t comment_len = strlen(comment);
+    if(strncmp(line, comment, comment_len) != 0 || line[comment_len] != ' ')
+        return false;
+
+    const char* ptr = line + comment_len + 1;
+    if(!isdigit((unsigned char)ptr[0]) || !isdigit((unsigned char)ptr[1]) || !isdigit((unsigned char)ptr[2]) || ptr[3] != ':')
+        return false;
+
+    int index = (ptr[0] - '0') * 100 + (ptr[1] - '0') * 10 + (ptr[2] - '0');
+    ptr += 4;
+
+    const char* payload = ptr;
+    size_t payload_len = strlen(payload);
+    trim_span_end(&payload, &payload_len);
+
+    if(index_out) *index_out = index;
+    if(payload_out) *payload_out = payload;
+    if(payload_len_out) *payload_len_out = payload_len;
+    return true;
+}
+
+static bool span_is_hex(const char* text, size_t len)
+{
+    for(size_t i = 0; i < len; i++)
+        if(hex_value(text[i]) < 0)
+            return false;
+
+    return true;
+}
+
+static void strip_cr_chars(char* text)
+{
+    if(!text) return;
+
+    char* src = text;
+    char* dst = text;
+    while(*src)
+    {
+        if(*src != '\r')
+            *dst++ = *src;
+        src++;
+    }
+    *dst = '\0';
+}
+
+static bool lint_script_cart_text(const char* path, char* text, CartLintResult* result)
+{
+    memset(result, 0, sizeof(*result));
+    result->ok = true;
+
+    if(!text || !text[0])
+    {
+        set_cart_lint_error(result, 0, "file is empty");
+        return false;
+    }
+
+    const char* comment = script_cart_comment_for_path(path);
+    if(!comment)
+    {
+        set_cart_lint_error(result, 0, "unsupported script-cart extension; supported: .lua .moon .wasmp .js .nut .wren .py .rb .janet .scm .fnl");
+        return false;
+    }
+
+    strip_cr_chars(text);
+
+    bool in_section = false;
+    bool saw_row = false;
+    bool seen_rows[256] = {0};
+    char current_tag[32] = {0};
+    const ScriptCartSectionRule* current_rule = NULL;
+
+    int line_no = 1;
+    for(char* line = text; line; line_no++)
+    {
+        char* next = strchr(line, '\n');
+        if(next)
+            *next = '\0';
+
+        bool is_end_tag = false;
+        char tag[32];
+
+        if(parse_tag_line(line, comment, &is_end_tag, tag, sizeof(tag)))
+        {
+            if(is_end_tag)
+            {
+                if(!in_section)
+                {
+                    set_cart_lint_error(result, line_no, "unexpected closing tag </%s>", tag);
+                    return false;
+                }
+
+                if(strcmp(tag, current_tag) != 0)
+                {
+                    set_cart_lint_error(result, line_no, "closing tag </%s> does not match open section <%s>", tag, current_tag);
+                    return false;
+                }
+
+                if(!saw_row)
+                {
+                    set_cart_lint_error(result, line_no, "section <%s> has no rows", current_tag);
+                    return false;
+                }
+
+                in_section = false;
+                saw_row = false;
+                current_tag[0] = '\0';
+                current_rule = NULL;
+                memset(seen_rows, 0, sizeof(seen_rows));
+            }
+            else
+            {
+                if(in_section)
+                {
+                    set_cart_lint_error(result, line_no, "nested section <%s> inside <%s>", tag, current_tag);
+                    return false;
+                }
+
+                int bank = 0;
+                current_rule = script_cart_section_rule(tag, &bank);
+                if(!current_rule)
+                {
+                    set_cart_lint_error(result, line_no, "unknown or unsupported TIC-80 section tag <%s>", tag);
+                    return false;
+                }
+
+                (void)bank;
+                snprintf(current_tag, sizeof(current_tag), "%s", tag);
+                in_section = true;
+                saw_row = false;
+                memset(seen_rows, 0, sizeof(seen_rows));
+            }
+        }
+        else if(in_section)
+        {
+            int row_index = -1;
+            const char* payload = NULL;
+            size_t payload_len = 0;
+
+            if(!parse_section_row_line(line, comment, &row_index, &payload, &payload_len))
+            {
+                set_cart_lint_error(result, line_no, "malformed row in section <%s>; expected `%s 000:<hex>`", current_tag, comment);
+                return false;
+            }
+
+            if(row_index < 0 || row_index >= current_rule->row_count)
+            {
+                set_cart_lint_error(result, line_no, "section <%s> row %03d is out of range; expected 000-%03d", current_tag, row_index, current_rule->row_count - 1);
+                return false;
+            }
+
+            if(seen_rows[row_index])
+            {
+                set_cart_lint_error(result, line_no, "section <%s> row %03d is duplicated", current_tag, row_index);
+                return false;
+            }
+
+            if((int)payload_len != current_rule->payload_hex_chars)
+            {
+                set_cart_lint_error(result, line_no, "section <%s> row %03d has %zu hex chars; expected %d", current_tag, row_index, payload_len, current_rule->payload_hex_chars);
+                return false;
+            }
+
+            if(!span_is_hex(payload, payload_len))
+            {
+                set_cart_lint_error(result, line_no, "section <%s> row %03d contains non-hex characters", current_tag, row_index);
+                return false;
+            }
+
+            seen_rows[row_index] = true;
+            saw_row = true;
+        }
+
+        if(!next)
+            break;
+
+        line = next + 1;
+    }
+
+    if(in_section)
+    {
+        set_cart_lint_error(result, line_no - 1, "section <%s> is missing closing tag </%s>", current_tag, current_tag);
+        return false;
+    }
+
+    return true;
+}
+
+static int print_lint_cart_json(const char* path, const CartLintResult* result)
+{
+    StringBuilder sb;
+    sb_init(&sb);
+    sb_append(&sb, "{");
+    sb_append(&sb, "\"ok\":");
+    sb_append(&sb, result->ok ? "true" : "false");
+    sb_append(&sb, ",\"file\":");
+    sb_append_json_string(&sb, path);
+    sb_append(&sb, ",\"message\":");
+    sb_append_json_string(&sb, result->message[0] ? result->message : (result->ok ? "lint ok" : "lint failed"));
+    if(result->line > 0)
+        sb_appendf(&sb, ",\"line\":%d", result->line);
+    sb_append(&sb, ",\"kind\":\"script_cart\"");
+    sb_append(&sb, "}\n");
+    fputs(sb.data ? sb.data : "{}", stdout);
+    sb_free(&sb);
+    return result->ok ? 0 : 1;
+}
+
+static int lint_cart_command(const char* path, bool json_output)
+{
+    if(!path || !path[0])
+    {
+        if(json_output)
+        {
+            CartLintResult result = {.ok = false, .line = 0};
+            snprintf(result.message, sizeof(result.message), "tic80ctl: lint-cart requires a file path");
+            return print_lint_cart_json("", &result);
+        }
+
+        fprintf(stderr, "tic80ctl: lint-cart requires a file path\n");
+        return 1;
+    }
+
+    char* text = read_text_file(path);
+    if(!text)
+    {
+        CartLintResult result = {.ok = false, .line = 0};
+        snprintf(result.message, sizeof(result.message), "failed to read file: %s", strerror(errno));
+        if(json_output)
+            return print_lint_cart_json(path, &result);
+
+        fprintf(stderr, "lint failed: %s: %s\n", path, result.message);
+        return 1;
+    }
+
+    CartLintResult result;
+    bool ok = lint_script_cart_text(path, text, &result);
+    free(text);
+
+    if(ok)
+        snprintf(result.message, sizeof(result.message), "lint ok");
+
+    if(json_output)
+        return print_lint_cart_json(path, &result);
+
+    if(ok)
+    {
+        printf("lint ok: %s\n", path);
+        return 0;
+    }
+
+    if(result.line > 0)
+        fprintf(stderr, "lint failed: %s:%d: %s\n", path, result.line, result.message);
+    else
+        fprintf(stderr, "lint failed: %s: %s\n", path, result.message);
+
+    return 1;
 }
 
 static bool file_exists(const char* path)
@@ -1747,6 +2217,7 @@ static const char* help_topic_text(const char* topic)
 {
     if(!topic || !topic[0]) return help_text;
     if(strcmp(topic, "start") == 0) return help_start_text;
+    if(strcmp(topic, "lint-cart") == 0) return help_lint_cart_text;
     if(strcmp(topic, "load") == 0) return help_load_text;
     if(strcmp(topic, "run") == 0) return help_run_text;
     if(strcmp(topic, "eval") == 0) return help_eval_text;
@@ -3390,6 +3861,9 @@ int main(int argc, char** argv)
         }
         return run_command_request(&paths, argv[0], "run_command", json_output);
     }
+
+    if(strcmp(subcommand, "lint-cart") == 0)
+        return lint_cart_command(argc > 0 ? argv[0] : NULL, json_output);
 
     if(strcmp(subcommand, "load") == 0)
     {
