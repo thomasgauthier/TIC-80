@@ -2620,15 +2620,30 @@ char* studio_run_playtest_episode_mcp(Studio* studio, const char* script, s32 ti
     return strdup("mcp playtest episode runner unavailable");
 }
 
-void studio_warmup_mcp(Studio* studio)
+bool studio_is_mcp_ready(Studio* studio)
+{
+#if defined(BUILD_EDITORS)
+    return studio != NULL
+        && studio->console != NULL
+        && getStudioMode(studio) == TIC_CONSOLE_MODE
+        && studio->console->active;
+#else
+    TIC_UNUSED(studio);
+    return false;
+#endif
+}
+
+void studio_await_mcp_ready(Studio* studio)
 {
 #if defined(BUILD_EDITORS)
     if(studio == NULL)
         return;
 
-    // Advance startup frames during MCP initialization so the first external
-    // command arrives after the studio has left START mode.
-    for(s32 i = 0; i < 120 && getStudioMode(studio) == TIC_START_MODE; i++)
+    // MCP readiness is defined by console state, not by transport readiness or
+    // merely leaving START mode. Wait until the console has completed its
+    // first tick and begun accepting input, so the first external command runs
+    // against the same settled state a human sees.
+    while(studio_alive(studio) && !studio_is_mcp_ready(studio))
         studio_tick(studio, (tic80_input){0});
 #else
     TIC_UNUSED(studio);

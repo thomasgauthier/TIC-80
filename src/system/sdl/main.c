@@ -739,11 +739,11 @@ static bool processMcpStdio(Studio* studio, SDL_mutex* mutex)
             if(mutex)
             {
                 SDL_LockMutex(mutex);
-                studio_warmup_mcp(studio);
+                studio_await_mcp_ready(studio);
                 SDL_UnlockMutex(mutex);
             }
             else
-                studio_warmup_mcp(studio);
+                studio_await_mcp_ready(studio);
 
             freeMcpRequest(&request);
             continue;
