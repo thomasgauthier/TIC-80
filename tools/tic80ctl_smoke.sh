@@ -41,6 +41,15 @@ EOF
 START_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" start)"
 printf '%s\n' "$START_OUT" | grep -q '^started tic80ctl session'
 
+HELP_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --help)"
+printf '%s\n' "$HELP_OUT" | grep -q '^tic80ctl$'
+printf '%s\n' "$HELP_OUT" | grep -q '^quick start:$'
+printf '%s\n' "$HELP_OUT" | grep -q '^  tic80ctl eval "trace(type(TIC))"$'
+
+HELP_TOPIC_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help playtest)"
+printf '%s\n' "$HELP_TOPIC_OUT" | grep -q '^tic80ctl playtest --script-file <file>'
+printf '%s\n' "$HELP_TOPIC_OUT" | grep -q 'artifacts are written under ./playtest/episode_N/'
+
 set +e
 BAD_START_OUT="$(timeout 5s env TIC80CTL_STATE_DIR="$BAD_STATE_DIR" TIC80CTL_BIN="$SESSION_DIR/missing-tic80-bin" "$ROOT/tic80ctl" start 2>&1)"
 BAD_START_STATUS=$?

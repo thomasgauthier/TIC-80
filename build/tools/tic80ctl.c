@@ -95,21 +95,169 @@ typedef struct
 static const char* usage_text =
     "usage: tic80ctl [--json] <command> [args...]\n"
     "\n"
-    "commands:\n"
-    "  start\n"
-    "  status\n"
-    "  stop\n"
-    "  cmd \"<tic80 command>\"\n"
-    "  load <cart>\n"
-    "  run\n"
-    "  eval \"<expr>\"\n"
-    "  screenshot [path]\n"
+    "run `tic80ctl --help` for a fuller guide.\n";
+
+static const char* help_text =
+    "tic80ctl\n"
+    "\n"
+    "Operate a live TIC-80 session from the shell.\n"
+    "\n"
+    "usage:\n"
+    "  tic80ctl [--json] <command> [args...]\n"
+    "  tic80ctl --help\n"
+    "  tic80ctl help [command]\n"
+    "\n"
+    "quick start:\n"
+    "  tic80ctl start\n"
+    "  tic80ctl load game.lua\n"
+    "  tic80ctl run\n"
+    "  tic80ctl eval \"trace(type(TIC))\"\n"
+    "\n"
+    "session commands:\n"
+    "  start             start a TIC-80 session rooted at the current directory\n"
+    "  status            report whether the session is alive\n"
+    "  stop              stop the active session\n"
+    "\n"
+    "runtime commands:\n"
+    "  cmd \"...\"        send a raw TIC-80 console command\n"
+    "  load <cart>       load a cart or script cart into the active session\n"
+    "  run               start the loaded cart\n"
+    "  eval \"<expr>\"    run a short Lua expression in the active runtime\n"
+    "  screenshot [path] capture one frame; path must be relative to the TIC filesystem root\n"
+    "\n"
+    "playtest:\n"
     "  playtest --script-file <file> [--timeout <seconds>] [--input-overlay|--no-input-overlay]\n"
-    "    resets the current cart by re-running it before the episode\n"
-    "  sfx ...\n"
-    "  music ...\n"
-    "  sprite ...\n"
-    "  map ...\n";
+    "    runs one bounded scripted episode\n"
+    "    re-runs the currently loaded cart before the episode\n"
+    "    writes artifacts under ./playtest/episode_N/\n"
+    "\n"
+    "editor commands:\n"
+    "  sfx ...           inspect or edit SFX envelopes, wavetable, panning, speed, and loop points\n"
+    "  music ...         inspect or edit track, frame, and pattern-row data\n"
+    "  sprite ...        inspect or edit sprite tiles, regions, and palette data\n"
+    "  map ...           inspect or edit map rectangles and chunks\n"
+    "\n"
+    "important notes:\n"
+    "  - start from the repo or project root you want TIC-80 to see\n"
+    "  - `eval` needs a live runtime; usually call `run` first\n"
+    "  - `playtest` is the preferred multi-frame verification tool\n"
+    "  - script carts like .lua include code at the top and tagged resources at the bottom\n"
+    "  - `resume reload` is useful when the cart is written to preserve state across reloads\n"
+    "\n"
+    "help topics:\n"
+    "  tic80ctl help start\n"
+    "  tic80ctl help load\n"
+    "  tic80ctl help run\n"
+    "  tic80ctl help eval\n"
+    "  tic80ctl help screenshot\n"
+    "  tic80ctl help playtest\n"
+    "  tic80ctl help sfx\n"
+    "  tic80ctl help music\n"
+    "  tic80ctl help sprite\n"
+    "  tic80ctl help map\n";
+
+static const char* help_start_text =
+    "tic80ctl start\n"
+    "\n"
+    "Start TIC-80 from the current working directory.\n"
+    "\n"
+    "Use this from the repo or project root you want TIC-80 to treat as its filesystem root.\n"
+    "Load carts after start.\n";
+
+static const char* help_load_text =
+    "tic80ctl load <cart>\n"
+    "\n"
+    "Load a cart or script cart into the active session.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl load game.lua\n"
+    "  tic80ctl load game.tic\n"
+    "\n"
+    "For script carts, keep code near the top of the file and leave tagged resource blocks alone\n"
+    "unless you intentionally edit them.\n";
+
+static const char* help_run_text =
+    "tic80ctl run\n"
+    "\n"
+    "Start the currently loaded cart.\n"
+    "\n"
+    "If this fails immediately, suspect a startup/runtime error in the cart's first frame.\n";
+
+static const char* help_eval_text =
+    "tic80ctl eval \"<expr>\"\n"
+    "\n"
+    "Run a short Lua expression in the active cart runtime.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl eval \"trace(type(TIC))\"\n"
+    "  tic80ctl eval \"trace(player.x)\"\n"
+    "  tic80ctl eval \"debug_flag = true\"\n"
+    "\n"
+    "Call `run` first. `eval` needs a live runtime.\n";
+
+static const char* help_screenshot_text =
+    "tic80ctl screenshot [path]\n"
+    "\n"
+    "Capture one frame from the active session.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl screenshot\n"
+    "  tic80ctl screenshot shots/frame.png\n"
+    "\n"
+    "Paths are relative to the TIC filesystem root, not absolute host paths.\n";
+
+static const char* help_playtest_text =
+    "tic80ctl playtest --script-file <file> [--timeout <seconds>] [--input-overlay|--no-input-overlay]\n"
+    "\n"
+    "Run one deterministic scripted episode and collect artifacts.\n"
+    "\n"
+    "Important behavior:\n"
+    "  - each playtest re-runs the currently loaded cart before the episode\n"
+    "  - artifacts are written under ./playtest/episode_N/\n"
+    "  - inspect script.lua, log.txt, console.txt, and screenshots/\n"
+    "\n"
+    "Typical flow:\n"
+    "  tic80ctl load game.lua\n"
+    "  tic80ctl run\n"
+    "  tic80ctl playtest --script-file route.lua --timeout 20\n";
+
+static const char* help_sfx_text =
+    "tic80ctl sfx ...\n"
+    "\n"
+    "Inspect or edit SFX wavetable, volume/wave/pitch envelopes, arpeggio, panning, speed, and loop points.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl sfx wavetable 0\n"
+    "  tic80ctl sfx volume 0 0:15,8:8,29:0\n"
+    "  tic80ctl sfx arpeggio 0 0,4,7,12\n";
+
+static const char* help_music_text =
+    "tic80ctl music ...\n"
+    "\n"
+    "Inspect or edit track settings, frame pattern assignments, and pattern-row note data.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl music track 0\n"
+    "  tic80ctl music frame 0 0\n"
+    "  tic80ctl music row 1 5 C-4:2:F1a\n";
+
+static const char* help_sprite_text =
+    "tic80ctl sprite ...\n"
+    "\n"
+    "Inspect or edit sprite tiles, regions, and palette data.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl sprite tile 3\n"
+    "  tic80ctl sprite palette\n";
+
+static const char* help_map_text =
+    "tic80ctl map ...\n"
+    "\n"
+    "Inspect or edit map rectangles and map chunks.\n"
+    "\n"
+    "Examples:\n"
+    "  tic80ctl map rect 5 7 3 2\n"
+    "  tic80ctl map chunk 10 12 3 2 1,2,3,4,5,6\n";
 
 static void sb_init(StringBuilder* sb)
 {
@@ -1590,9 +1738,39 @@ static void cleanup_stale_session(const StatePaths* paths)
     unlink_session_files(paths);
 }
 
-static void print_usage(void)
+static void print_usage(FILE* out)
 {
-    fputs(usage_text, stderr);
+    fputs(usage_text, out);
+}
+
+static const char* help_topic_text(const char* topic)
+{
+    if(!topic || !topic[0]) return help_text;
+    if(strcmp(topic, "start") == 0) return help_start_text;
+    if(strcmp(topic, "load") == 0) return help_load_text;
+    if(strcmp(topic, "run") == 0) return help_run_text;
+    if(strcmp(topic, "eval") == 0) return help_eval_text;
+    if(strcmp(topic, "screenshot") == 0) return help_screenshot_text;
+    if(strcmp(topic, "playtest") == 0) return help_playtest_text;
+    if(strcmp(topic, "sfx") == 0) return help_sfx_text;
+    if(strcmp(topic, "music") == 0) return help_music_text;
+    if(strcmp(topic, "sprite") == 0) return help_sprite_text;
+    if(strcmp(topic, "map") == 0) return help_map_text;
+    return NULL;
+}
+
+static int print_help(const char* topic)
+{
+    const char* text = help_topic_text(topic);
+    if(!text)
+    {
+        fprintf(stderr, "tic80ctl: unknown help topic: %s\n\n", topic);
+        print_usage(stderr);
+        return 1;
+    }
+
+    fputs(text, stdout);
+    return 0;
 }
 
 static bool extract_first_text(const char* raw, char* out, size_t out_size)
@@ -3164,9 +3342,12 @@ int main(int argc, char** argv)
 
     if(argc == 0)
     {
-        print_usage();
+        print_usage(stderr);
         return 1;
     }
+
+    if(strcmp(argv[0], "--help") == 0 || strcmp(argv[0], "-h") == 0)
+        return print_help(argc > 1 ? argv[1] : NULL);
 
     char state_dir[PATH_MAX];
     default_state_dir(state_dir, sizeof(state_dir));
@@ -3180,6 +3361,9 @@ int main(int argc, char** argv)
     argc--;
     argv++;
     consume_json_flag(&argc, &argv, &json_output);
+
+    if(strcmp(subcommand, "help") == 0)
+        return print_help(argc > 0 ? argv[0] : NULL);
 
     if(strcmp(subcommand, "start") == 0)
     {
@@ -3335,6 +3519,6 @@ int main(int argc, char** argv)
     if(strcmp(subcommand, "map") == 0)
         return handle_map_command(&paths, argc, argv, json_output);
 
-    print_usage();
+    print_usage(stderr);
     return 1;
 }
