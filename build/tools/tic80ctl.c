@@ -105,6 +105,7 @@ static const char* usage_text =
     "  eval \"<expr>\"\n"
     "  screenshot [path]\n"
     "  playtest --script-file <file> [--timeout <seconds>] [--input-overlay|--no-input-overlay]\n"
+    "    resets the current cart by re-running it before the episode\n"
     "  sfx ...\n"
     "  music ...\n"
     "  sprite ...\n"

@@ -23,6 +23,7 @@ Think in this loop:
 7. rerun the same episode
 
 The goal is not to simulate live controller play. The goal is to author a compact, reproducible test route and collect evidence from the result.
+Each `playtest` starts by re-running the loaded cart, so every episode begins from a fresh cart boot instead of inheriting prior live-session state.
 
 ## `tic80ctl playtest`
 
@@ -42,6 +43,9 @@ Examples:
 tic80ctl playtest --script-file episode.lua
 tic80ctl playtest --script-file episode.lua --timeout 5 --no-input-overlay
 ```
+
+Do not expect state to carry from one `playtest` invocation to the next.
+If you need a longer route, keep it inside one episode script.
 
 Typical output includes:
 

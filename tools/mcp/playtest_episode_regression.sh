@@ -149,7 +149,7 @@ def recv_response(proc, request_id):
             return obj
 
 
-def run_episode(proc, request_id, script, overlay):
+def run_episode(proc, request_id, script, overlay, expected_frames=1):
     send(proc, {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -168,7 +168,7 @@ def run_episode(proc, request_id, script, overlay):
     assert result["isError"] is False, response
     text = result["content"][0]["text"]
     assert "status=done" in text, text
-    assert "frames=1" in text, text
+    assert f"frames={expected_frames}" in text, text
     return text
 
 
@@ -219,6 +219,15 @@ move_script = "\n".join([
     "end_episode('done','move')",
 ])
 
+carry_script = "\n".join([
+    "log('carry')",
+    "set_input({right=true})",
+    "frameadvance()",
+    "set_input({right=true})",
+    "frameadvance()",
+    "end_episode('done','carry')",
+])
+
 overlay_script = "\n".join([
     "log('overlay')",
     "set_input({right=true})",
@@ -259,6 +268,7 @@ move_png = episode2 / "screenshots" / "000001.png"
 assert move_png.is_file(), move_png
 assert (episode2 / "log.txt").read_text().find("move") >= 0
 assert "tick " in (episode2 / "console.txt").read_text()
+move_png_bytes = move_png.read_bytes()
 
 baseline_target = pixel(baseline_png, 17, 60)
 baseline_neighbor = pixel(baseline_png, 19, 60)
@@ -268,24 +278,37 @@ move_neighbor = pixel(move_png, 19, 60)
 assert baseline_target != move_target, (baseline_target, move_target)
 assert baseline_neighbor == move_neighbor, (baseline_neighbor, move_neighbor)
 
-run_episode(proc, 12, overlay_script, True)
+run_episode(proc, 12, carry_script, False, expected_frames=2)
 episode3 = root / "playtest" / "episode_3"
-overlay_png = episode3 / "screenshots" / "000001.png"
-assert overlay_png.is_file(), overlay_png
-assert move_png.read_bytes() != overlay_png.read_bytes(), "overlay-enabled screenshot should differ from overlay-disabled screenshot"
+carry_png = episode3 / "screenshots" / "000002.png"
+assert carry_png.is_file(), carry_png
+assert (episode3 / "log.txt").read_text().find("carry") >= 0
+assert "tick 2" in (episode3 / "console.txt").read_text()
 
-run_episode(proc, 13, retention_script, False)
+run_episode(proc, 13, move_script, False)
+episode1 = root / "playtest" / "episode_1"
+reset_png = episode1 / "screenshots" / "000001.png"
+assert reset_png.is_file(), reset_png
+assert reset_png.read_bytes() == move_png_bytes, "playtest should restart from the same clean state for repeated routes"
+
+run_episode(proc, 14, overlay_script, True)
+episode2 = root / "playtest" / "episode_2"
+overlay_png = episode2 / "screenshots" / "000001.png"
+assert overlay_png.is_file(), overlay_png
+assert move_png_bytes != overlay_png.read_bytes(), "overlay-enabled screenshot should differ from overlay-disabled screenshot"
+
+run_episode(proc, 15, retention_script, False)
 episodes = sorted(path.name for path in (root / "playtest").glob("episode_*") if path.is_dir())
 assert len(episodes) == 3, episodes
 assert "episode_1" in episodes, episodes
-assert "retention" in (root / "playtest" / "episode_1" / "log.txt").read_text()
+assert "retention" in (root / "playtest" / "episode_3" / "log.txt").read_text()
 
 error_script = "\n".join([
     "frameadvance()",
     "error('episode boom')",
 ])
 
-error_result = call_tool(proc, 15, "run_playtest_episode", {
+error_result = call_tool(proc, 16, "run_playtest_episode", {
     "script": error_script,
     "timeout_seconds": 5,
     "input_overlay": False,
@@ -293,7 +316,7 @@ error_result = call_tool(proc, 15, "run_playtest_episode", {
 assert error_result["isError"] is True, error_result
 assert "episode boom" in error_result["content"][0]["text"], error_result
 
-debug_state = call_tool(proc, 16, "run_command", {"command": "eval trace(DEBUG_MODE == nil and 'debug off' or 'debug on')"})
+debug_state = call_tool(proc, 17, "run_command", {"command": "eval trace(DEBUG_MODE == nil and 'debug off' or 'debug on')"})
 assert debug_state["isError"] is False, debug_state
 assert "debug off" in debug_state["content"][0]["text"], debug_state
 

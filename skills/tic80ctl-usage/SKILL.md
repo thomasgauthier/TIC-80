@@ -376,6 +376,9 @@ Helpful habits:
 
 Use `playtest` when you want to drive the game over many frames and inspect the result.
 
+Each `playtest` call resets the currently loaded cart by re-running it before the episode starts.
+Treat episodes as isolated runs from cart startup, not continuations of the previous playtest.
+
 Syntax:
 
 - `tic80ctl playtest --script-file <file>`
@@ -397,6 +400,7 @@ Use playtest for:
 - before/after proof runs
 
 Prefer playtest over repeated one-frame shell pokes when the question spans multiple frames.
+If you need continuity across frames, keep that route inside one episode script.
 
 ## Playtest Script API
 
@@ -510,6 +514,7 @@ Example route labels:
 ## `DEBUG_MODE` During Playtest
 
 For Lua carts, `playtest` enables `DEBUG_MODE=true` during the episode and clears it afterward.
+It does that after restarting the cart for the episode.
 
 That is useful for debug-only rendering and tracing, for example:
 

@@ -4447,11 +4447,8 @@ static bool openPlaytestLogFiles(Console* console)
     return true;
 }
 
-static bool ensurePlaytestRunMode(Console* console)
+static bool restartPlaytestCart(Console* console)
 {
-    if(getStudioMode(console->studio) == TIC_RUN_MODE)
-        return true;
-
     bool ignoredError = false;
     char* output = consoleRunCommandMcp(console, "run", &ignoredError);
     free(output);
@@ -4749,8 +4746,8 @@ char* consoleRunPlaytestEpisodeMcp(Console* console, const char* script, s32 tim
     resetPlaytestState(console);
     playtestSetResult(console, "done", "script completed");
 
-    if(!ensurePlaytestRunMode(console))
-        return strdup("failed to enter run mode");
+    if(!restartPlaytestCart(console))
+        return strdup("failed to reset cart into run mode");
 
     if(!preparePlaytestArtifacts(console, script, inputOverlay))
     {

@@ -61,6 +61,7 @@ prefer the second option unless you are debugging a very narrow one-off detail.
 
 Use the shell commands for setup and targeted probing.
 Use `playtest` for anything that depends on multiple frames, route flow, or proof of behavior over time.
+Each `playtest` starts from a fresh cart restart, which keeps comparisons reproducible across reruns.
 
 ## Working Style
 
