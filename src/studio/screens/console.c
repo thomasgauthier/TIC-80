@@ -446,6 +446,11 @@ static const char* getCartName(const char* name)
     return getName(name, CART_EXT);
 }
 
+static bool mcpAutoConfirm(Console* console)
+{
+    return console != NULL && console->mcp.command.active;
+}
+
 static void scrollBuffer(char* buffer)
 {
     memmove(buffer, buffer + CONSOLE_BUFFER_WIDTH, CONSOLE_BUFFER_SIZE - CONSOLE_BUFFER_WIDTH);
@@ -932,14 +937,20 @@ static void updateProject(Console* console)
 
         if(data) SCOPE(free(data))
         {
+            bool loaded = false;
+
 #if defined(TIC80_PRO)
             if(project_ext(path))
-                tic_project_load(console->rom.name, data, size, &tic->cart);
+                loaded = tic_project_load(console->rom.name, data, size, &tic->cart);
             else
 #endif
+            {
                 tic_cart_load(&tic->cart, data, size);
+                loaded = true;
+            }
 
-            studioRomLoaded(console->studio);
+            if(loaded)
+                studioRomLoaded(console->studio);
         }
     }
 }
@@ -1037,7 +1048,14 @@ static void onLoadCommandConfirmed(Console* console)
         tic_mem* tic = console->tic;
 
         const char* param = console->desc->params->key;
-        const char* name = getCartName(param);
+        const bool isPng = tic_tool_has_ext(param, PngExt);
+#if defined(TIC80_PRO)
+        const bool isProject = project_ext(param);
+#else
+        const bool isProject = false;
+#endif
+        const bool isBinary = !isPng && !isProject;
+        const char* name = isBinary ? getCartName(param) : param;
         const char* section = console->desc->count > 1 ? console->desc->params[1].key : NULL;
         if(section)
         {
@@ -1078,22 +1096,27 @@ static void onLoadCommandConfirmed(Console* console)
         else
         {
             s32 size = 0;
-            void* data = strcmp(name, CONFIG_TIC_PATH) == 0
-                ? tic_fs_loadroot(console->fs, name, &size)
-                : tic_fs_load(console->fs, name, &size);
 
-            if(data) SCOPE(free(data))
+            if(isBinary)
             {
-                tic_cartridge* cart = newCart();
+                void* data = strcmp(name, CONFIG_TIC_PATH) == 0
+                    ? tic_fs_loadroot(console->fs, name, &size)
+                    : tic_fs_load(console->fs, name, &size);
 
-                SCOPE(free(cart))
+                if(data) SCOPE(free(data))
                 {
-                    tic_cart_load(cart, data, size);
-                    loadCartSection(console, cart, section);
-                    onCartLoaded(console, name, section);
+                    tic_cartridge* cart = newCart();
+
+                    SCOPE(free(cart))
+                    {
+                        tic_cart_load(cart, data, size);
+                        loadCartSection(console, cart, section);
+                        onCartLoaded(console, name, section);
+                    }
                 }
+                else printError(console, "\nfile not found");
             }
-            else if(tic_tool_has_ext(param, PngExt) && tic_fs_exists(console->fs, param))
+            else if(isPng && tic_fs_exists(console->fs, param))
             {
                 png_buffer buffer;
                 buffer.data = tic_fs_load(console->fs, param, &buffer.size);
@@ -1124,9 +1147,12 @@ static void onLoadCommandConfirmed(Console* console)
 
                         SCOPE(free(cart))
                         {
-                            tic_project_load(name, data, size, cart);
-                            loadCartSection(console, cart, section);
-                            onCartLoaded(console, name, section);
+                            if(tic_project_load(name, data, size, cart))
+                            {
+                                loadCartSection(console, cart, section);
+                                onCartLoaded(console, name, section);
+                            }
+                            else printError(console, "\nproject loading error");
                         }
                     }
                     else printError(console, "\nproject loading error");
@@ -1181,7 +1207,11 @@ static void onConfirm(Studio* studio, bool yes, void* data)
 
 static void confirmCommand(Console* console, const char** text, s32 rows, ConsoleConfirmCallback callback)
 {
-    if(console->args.cli)
+    if(mcpAutoConfirm(console))
+    {
+        callback(console);
+    }
+    else if(console->args.cli)
     {
         for(s32 i = 0; i < rows; i++)
         {
@@ -1231,8 +1261,13 @@ static void onLoadDemoCommand(Console* console, const tic_script* script)
 {
     if(studioCartChanged(console->studio))
     {
-        LoadDemoConfirmData data = {console, onLoadDemoCommandConfirmed, script};
-        confirmDialog(console->studio, LoadWarningRows, COUNT_OF(LoadWarningRows), onLoadDemoConfirm, MOVE(data));
+        if(mcpAutoConfirm(console))
+            onLoadDemoCommandConfirmed(console, script);
+        else
+        {
+            LoadDemoConfirmData data = {console, onLoadDemoCommandConfirmed, script};
+            confirmDialog(console->studio, LoadWarningRows, COUNT_OF(LoadWarningRows), onLoadDemoConfirm, MOVE(data));
+        }
     }
     else
     {

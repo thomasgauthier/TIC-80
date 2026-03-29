@@ -200,6 +200,12 @@ printf '%s\n' "$BAD_START_OUT" | grep -q '^tic80ctl:'
 STATUS_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" status)"
 printf '%s\n' "$STATUS_OUT" | grep -q '^running pid='
 
+DIRTY_SFX_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" sfx speed 0 1)"
+printf '%s\n' "$DIRTY_SFX_OUT" | grep -q '^updated sfx speed$'
+
+DIRTY_LOAD_JSON="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load --json tools/mcp/fixtures/playtest_episode.lua)"
+printf '%s\n' "$DIRTY_LOAD_JSON" | jq -e '.response.result.isError == false and .response.result.structuredContent.command == "load" and .response.result.structuredContent.mode_after == "console" and (.response.result.structuredContent.text | contains("loaded!"))' >/dev/null
+
 set +e
 LOAD_FAIL_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" load "$EMPTY_CART" 2>&1)"
 LOAD_FAIL_STATUS=$?
