@@ -378,6 +378,7 @@ Use `playtest` when you want to drive the game over many frames and inspect the 
 
 Each `playtest` call resets the currently loaded cart by re-running it before the episode starts.
 Treat episodes as isolated runs from cart startup, not continuations of the previous playtest.
+Any state you staged with `tic80ctl eval` before `playtest` is discarded by that restart.
 
 Syntax:
 
@@ -401,6 +402,84 @@ Use playtest for:
 
 Prefer playtest over repeated one-frame shell pokes when the question spans multiple frames.
 If you need continuity across frames, keep that route inside one episode script.
+
+## Targeted Playtests Without New CLI Surface
+
+Sometimes you do not want generic "from title screen" coverage.
+You want "start from level 2", "start at the boss door", or "start from a late checkpoint".
+
+Do that in cart code, not by extending `tic80ctl`, and not by staging state with `eval` right before `playtest`.
+`playtest` restarts the cart, so pre-playtest `eval` mutations do not survive into the episode.
+
+The right pattern is:
+
+1. expose a small cart-side boot/reset path that can place the game into a known section
+2. make that path explicitly debug-only, for example by checking `DEBUG_MODE`
+3. keep normal user-facing startup separate from that debug-only path
+4. run `tic80ctl playtest` so the cart restarts and enters that section through its own code
+
+Why this is better:
+
+- it keeps `tic80ctl` generic
+- it reuses the game's own loading/checkpoint logic
+- it makes the setup explicit in the repo instead of hiding it in tool flags
+- it prevents tests from accidentally depending on carried-over live runtime state
+- it forces a clean distinction between debug-only section loading and normal player progression
+
+Simple boot-time level-loader example:
+
+```lua
+PLAYTEST_SECTION = nil
+
+local function load_section(id)
+  current_level = id
+  player.x = level_spawns[id].x
+  player.y = level_spawns[id].y
+  enemies = spawn_level_enemies(id)
+  camera:jump_to(level_camera_x(id), 0)
+end
+
+local function reset_game()
+  load_title_screen()
+
+  if DEBUG_MODE and PLAYTEST_SECTION == "level2" then
+    load_section(2)
+    state = "play"
+  end
+end
+```
+
+That keeps the debug-only start logic inside the cart's own reset path.
+Normal players still get the normal title-screen flow.
+
+Checkpoint example:
+
+```lua
+PLAYTEST_SECTION = nil
+
+local function restore_checkpoint(name)
+  local cp = checkpoints[name]
+  current_level = cp.level
+  player.x = cp.x
+  player.y = cp.y
+  player.hp = cp.hp
+  inventory.key = cp.key
+  door_open = cp.door_open
+end
+
+local function reset_game()
+  start_new_game()
+
+  if DEBUG_MODE and PLAYTEST_SECTION == "core_entry" then
+    restore_checkpoint("core_entry")
+  end
+end
+```
+
+Practical rule:
+
+- if you want a playtest to begin from a specific section, make the cart itself enter that section during its debug-only boot/reset flow
+- if you want to inspect a one-off live runtime state without restarting, use `run`, `eval`, and `screenshot` instead of `playtest`
 
 ## Playtest Script API
 

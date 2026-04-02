@@ -218,6 +218,9 @@ The most common agent-facing pattern is:
 2. `tic80ctl run`
 3. inspect with `tic80ctl eval "trace(...)"` or a scripted `playtest`
 4. rely on these APIs inside the cart:
+
+For late-game or per-level validation, do not rely on `tic80ctl eval` immediately before `playtest`.
+`playtest` restarts the cart, so targeted section starts should be implemented in the cart's own debug-only boot/reset logic instead.
    - `TIC`
    - `btn` / `btnp`
    - `cls`

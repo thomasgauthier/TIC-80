@@ -24,6 +24,7 @@ Think in this loop:
 
 The goal is not to simulate live controller play. The goal is to author a compact, reproducible test route and collect evidence from the result.
 Each `playtest` starts by re-running the loaded cart, so every episode begins from a fresh cart boot instead of inheriting prior live-session state.
+That means any state staged with `tic80ctl eval` before `playtest` is discarded when the episode starts.
 
 ## `tic80ctl playtest`
 
@@ -46,6 +47,124 @@ tic80ctl playtest --script-file episode.lua --timeout 5 --no-input-overlay
 
 Do not expect state to carry from one `playtest` invocation to the next.
 If you need a longer route, keep it inside one episode script.
+
+## Targeted Playtests Need Cart-Side Boot Logic
+
+Fresh-boot playtests are good for reproducibility, but they are not always the cheapest question to ask.
+If the agent wants to validate "just level 2" or "just the escape sequence", the cart should own that section-loading logic itself.
+
+Do not stage the state with `tic80ctl eval` and then call `playtest`.
+`playtest` restarts the cart, so that live runtime state will not carry into the episode.
+
+This avoids adding one-off flags to `tic80ctl`.
+The tool stays generic, while the game owns the meaning of "level 2", "checkpoint core_entry", or "boss intro".
+
+Preferred pattern:
+
+1. add a cart-side reset/boot helper that can enter the target section
+2. gate that path behind explicit debug-only logic such as `DEBUG_MODE`
+3. keep the normal player-facing startup path separate
+4. run a short `playtest` for the target segment
+
+### Why This Pattern Exists
+
+Use this when:
+
+- the cart has many levels
+- the interesting bug is deep into the game
+- replaying from boot would waste time
+- the game already has level/checkpoint loading logic you can reuse
+
+This gives you a deterministic setup without expanding the `tic80ctl` command surface.
+It also keeps the test setup honest: the episode still starts from a restart, but the cart deliberately chooses a debug-only entry section during that restart.
+
+### Example: Start At Level 2
+
+Cart-side boot/reset helper:
+
+```lua
+PLAYTEST_SECTION = nil
+
+local function load_level(id)
+  current_level = id
+  player.x = level_spawns[id].x
+  player.y = level_spawns[id].y
+  enemies = spawn_level_enemies(id)
+  camera_x = level_camera_x(id)
+end
+
+function reset_game()
+  show_title_screen()
+
+  if DEBUG_MODE and PLAYTEST_SECTION == "level2" then
+    load_level(2)
+    game_state = "play"
+  end
+end
+```
+
+That answers "does level 2 behave correctly from its intended entry state?" without replaying level 1 every time, while still letting the episode begin from a true restart.
+
+Shell flow:
+
+```sh
+tic80ctl load game.lua
+tic80ctl playtest --script-file level2_route.lua
+```
+
+### Example: Start From A Named Checkpoint
+
+Cart-side helper:
+
+```lua
+PLAYTEST_SECTION = nil
+
+function restore_checkpoint(name)
+  local cp = checkpoints[name]
+  current_level = cp.level
+  player.x = cp.x
+  player.y = cp.y
+  player.hp = cp.hp
+  inventory.key = cp.key
+  reactor_armed = cp.reactor_armed
+end
+
+function reset_game()
+  start_new_game()
+
+  if DEBUG_MODE and PLAYTEST_SECTION == "core_entry" then
+    restore_checkpoint("core_entry")
+  end
+end
+```
+
+Shell flow:
+
+```sh
+tic80ctl load danger_zone.lua
+tic80ctl playtest --script-file core_escape.lua
+```
+
+That is the right fix when the bug only matters near the core area and the agent should not have to manually replay the whole route first.
+
+### Practical Rules
+
+Prefer a named helper when:
+
+- multiple tests need the same setup
+- the setup touches several globals
+- the state has game-specific meaning
+- you want the repo to explain what "core_entry" or "level 2 start" means
+
+Prefer plain `run` + `eval` + `screenshot` instead of `playtest` when:
+
+- you are probing a one-off live-runtime hypothesis
+- the setup is only one or two assignments
+- you explicitly do not want a restart between setup and observation
+
+Good habit:
+
+- if a targeted playtest needs a special entry point, encode it in the cart's debug-only reset path instead of relying on carried state
 
 Typical output includes:
 

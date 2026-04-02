@@ -122,6 +122,8 @@ printf '%s\n' "$HELP_OUT" | grep -q '^  tic80ctl eval "trace(type(TIC))"$'
 HELP_TOPIC_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help playtest)"
 printf '%s\n' "$HELP_TOPIC_OUT" | grep -q '^tic80ctl playtest --script-file <file>'
 printf '%s\n' "$HELP_TOPIC_OUT" | grep -q 'artifacts are written under ./playtest/episode_N/'
+printf '%s\n' "$HELP_TOPIC_OUT" | grep -q 'live runtime state from prior `run`/`eval` commands is discarded'
+printf '%s\n' "$HELP_TOPIC_OUT" | grep -q 'do not rely on `tic80ctl eval` before `playtest`; the restart will wipe it'
 
 HELP_LINT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help lint-cart)"
 printf '%s\n' "$HELP_LINT_OUT" | grep -q '^tic80ctl lint-cart <file>$'
