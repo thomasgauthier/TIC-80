@@ -12,6 +12,18 @@ if(UNIX)
     install(TARGETS tic80ctl RUNTIME DESTINATION bin)
 endif()
 
+if(EMSCRIPTEN)
+    add_executable(tic80ctl-browser-core ${TOOLS_DIR}/tic80ctl_browser.c)
+    set_target_properties(tic80ctl-browser-core PROPERTIES
+        OUTPUT_NAME "tic80ctl-browser-core"
+        LINK_FLAGS "-s WASM=1 -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=65536 -s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_tic80ctl_browser_run_from_json'] -s EXPORTED_RUNTIME_METHODS=['ccall']"
+    )
+    configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser.js ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser.js COPYONLY)
+    configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-host.mjs ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-host.mjs COPYONLY)
+    configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-demo.html ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-demo.html COPYONLY)
+    configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-demo.html ${CMAKE_BINARY_DIR}/bin/tic80ctl-demo.html COPYONLY)
+endif()
+
 if(BUILD_TOOLS)
 
     add_executable(cart2prj ${TOOLS_DIR}/cart2prj.c ${CMAKE_SOURCE_DIR}/src/studio/project.c)

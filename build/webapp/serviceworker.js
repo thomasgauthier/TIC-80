@@ -1,6 +1,8 @@
-const version = 'tic80-v1'
+const version = 'tic80-v2'
 const assets = [
 	'index.html',
+	'tic80ctl-browser-demo.html',
+	'tic80ctl-browser-host.mjs',
 	'tic80.js',
 	'tic80.wasm',
 	'tic80-180.png',
@@ -30,4 +32,3 @@ self.addEventListener('fetch', function(event) {
     )
   );
 });
-

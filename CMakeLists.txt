@@ -30,6 +30,12 @@ else()
     set(BUILD_STATIC_DEFAULT OFF)
 endif()
 
+if(EMSCRIPTEN)
+    set(BUILD_MCP_POSTMESSAGE_DEFAULT ON)
+else()
+    set(BUILD_MCP_POSTMESSAGE_DEFAULT OFF)
+endif()
+
 set(BUILD_PLAYER_DEFAULT OFF)
 set(BUILD_LIBRETRO_DEFAULT OFF)
 if(ANDROID OR NINTENDO_SWITCH)
@@ -52,6 +58,7 @@ option(BUILD_TOUCH_INPUT "Build with touch input support" ${BUILD_TOUCH_INPUT_DE
 option(BUILD_NO_OPTIMIZATION "Build without optimizations for debugging" OFF)
 option(BUILD_ASAN_DEBUG "Build with AddressSanitizer" OFF)
 option(BUILD_WITH_ZLIB "Build with zlib linked" ON)
+option(BUILD_MCP_POSTMESSAGE "Build Emscripten web artifacts with postMessage MCP bridge support" ${BUILD_MCP_POSTMESSAGE_DEFAULT})
 option(TIC80_TARGET "Target binary suffix")
 option(PREFER_SYSTEM_LIBRARIES "Prefer link with system libraries" OFF)
 
@@ -66,6 +73,10 @@ endif()
 
 if(NINTENDO_SWITCH)
     set(PREFER_SYSTEM_LIBRARIES ON)
+endif()
+
+if(BUILD_MCP_POSTMESSAGE AND NOT EMSCRIPTEN)
+    message(WARNING "BUILD_MCP_POSTMESSAGE only affects Emscripten targets")
 endif()
 
 add_library(runtime INTERFACE)
@@ -84,6 +95,7 @@ message("BUILD_STATIC: ${BUILD_STATIC}")
 message("BUILD_SDLGPU: ${BUILD_SDLGPU}")
 message("BUILD_TOUCH_INPUT: ${BUILD_TOUCH_INPUT}")
 message("BUILD_WITH_ALL: ${BUILD_WITH_ALL}")
+message("BUILD_MCP_POSTMESSAGE: ${BUILD_MCP_POSTMESSAGE}")
 
 if(NINTENDO_3DS OR BAREMETALPI)
     set(BUILD_SDL OFF)

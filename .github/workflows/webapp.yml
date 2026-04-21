@@ -23,10 +23,16 @@ jobs:
     - name: Build
       run: |
         cd build
-        emcmake cmake -DBUILD_SDLGPU=On -DCMAKE_BUILD_TYPE=$BUILD_TYPE ..
+        emcmake cmake -DBUILD_SDLGPU=On -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DBUILD_MCP_POSTMESSAGE=On ..
         cmake --build . --config $BUILD_TYPE --parallel
         cp bin/tic80.js webapp/tic80.js
         cp bin/tic80.wasm webapp/tic80.wasm
+
+    - name: Verify MCP postMessage web wiring
+      run: tools/mcp/web_postmessage_smoke.sh build/bin/tic80.js
+
+    - name: Verify browser-hosted tic80ctl web wiring
+      run: tools/mcp/tic80ctl_browser_host_smoke.sh build/webapp
 
     - name: Deploy
       uses: JamesIves/github-pages-deploy-action@4.1.3

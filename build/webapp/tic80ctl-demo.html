@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>TIC-80 Browser tic80ctl Demo</title>
+        <style>
+        :root {
+            color-scheme: light;
+            --bg: #f4efe6;
+            --panel: #fffaf0;
+            --ink: #1b1d21;
+            --accent: #c44f2a;
+            --accent-strong: #8d2f14;
+            --border: #d8c7ae;
+            --muted: #6b6257;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Iosevka Web", "SFMono-Regular", Consolas, monospace;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at top left, #ffe2b8 0, transparent 36%),
+                linear-gradient(180deg, #f7f1e8 0, var(--bg) 100%);
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 360px minmax(0, 1fr);
+            gap: 20px;
+            padding: 20px;
+        }
+
+        section {
+            background: rgba(255, 250, 240, 0.9);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 12px 30px rgba(58, 40, 15, 0.08);
+        }
+
+        .controls {
+            padding: 18px;
+        }
+
+        h1, h2 {
+            margin: 0 0 12px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        h1 {
+            font-size: 1.35rem;
+        }
+
+        h2 {
+            font-size: 0.95rem;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        p {
+            margin: 0 0 12px;
+            line-height: 1.45;
+        }
+
+        .stack {
+            display: grid;
+            gap: 10px;
+        }
+
+        label {
+            display: grid;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        input, textarea, button, select {
+            font: inherit;
+        }
+
+        input, textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #fff;
+            color: var(--ink);
+        }
+
+        textarea {
+            min-height: 88px;
+            resize: vertical;
+        }
+
+        button {
+            border: 0;
+            border-radius: 999px;
+            padding: 10px 14px;
+            background: var(--accent);
+            color: #fff;
+            cursor: pointer;
+            transition: transform 120ms ease, background 120ms ease;
+        }
+
+        button:hover {
+            background: var(--accent-strong);
+            transform: translateY(-1px);
+        }
+
+        button.secondary {
+            background: #e7d6bc;
+            color: var(--ink);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .console {
+            padding: 18px;
+        }
+
+        pre {
+            margin: 0;
+            min-height: 420px;
+            max-height: 72vh;
+            overflow: auto;
+            padding: 14px;
+            border-radius: 12px;
+            background: #201913;
+            color: #f8e7d1;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        iframe {
+            width: 100%;
+            height: 640px;
+            border: 0;
+            border-top: 1px solid var(--border);
+            border-radius: 0 0 16px 16px;
+            background: #000;
+        }
+
+        .muted {
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+
+        @media (max-width: 960px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+
+            iframe {
+                height: 420px;
+            }
+        }
+        </style>
+    </head>
+    <body>
+        <main>
+            <section class="controls">
+                <h1>Browser tic80ctl Host</h1>
+                <p>This page hosts TIC-80 in an iframe and drives the browser MCP transport through a reusable controller module.</p>
+
+                <div class="stack">
+                    <label>
+                        TIC-80 URL
+                        <input id="targetUrl" value="./index.html">
+                    </label>
+
+                    <div class="grid">
+                        <button id="mountButton">Mount iframe</button>
+                        <button id="popupButton" class="secondary">Open popup</button>
+                    </div>
+
+                    <div class="grid">
+                        <button id="startButton">tic80ctl start</button>
+                        <button id="statusButton" class="secondary">tic80ctl status</button>
+                    </div>
+
+                    <label>
+                        TIC-80 command
+                        <input id="commandInput" value="run">
+                    </label>
+
+                    <div class="grid">
+                        <button id="runButton">Send "run" via MCP</button>
+                        <button id="cmdButton" class="secondary">tic80ctl cmd</button>
+                    </div>
+
+                    <div class="grid">
+                        <button id="toolsButton" class="secondary">tools/list</button>
+                        <button id="stopButton" class="secondary">tic80ctl stop</button>
+                    </div>
+
+                    <label>
+                        Raw argv
+                        <textarea id="argvInput">start --json</textarea>
+                    </label>
+
+                    <button id="argvButton" class="secondary">Run argv</button>
+                    <p class="muted">Popup control requires the browser MCP bridge to accept an explicitly bound controller source. Until that lands, the iframe path is the primary working route.</p>
+                </div>
+            </section>
+
+            <section class="console">
+                <h2>Session</h2>
+                <pre id="log"></pre>
+                <div id="frameMount"></div>
+            </section>
+        </main>
+
+        <script type="module">
+        import { createTic80CtlBrowser } from "./tic80ctl-browser.js";
+
+        const controller = createTic80CtlBrowser();
+        const frameMount = document.getElementById("frameMount");
+        const log = document.getElementById("log");
+        const targetUrl = document.getElementById("targetUrl");
+        const commandInput = document.getElementById("commandInput");
+        const argvInput = document.getElementById("argvInput");
+        let currentIframe = null;
+
+        function appendLog(label, value) {
+            const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+            log.textContent += `[${new Date().toISOString()}] ${label}\n${text}\n\n`;
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function ensureIframe() {
+            if (currentIframe && document.body.contains(currentIframe)) return currentIframe;
+
+            const iframe = document.createElement("iframe");
+            iframe.src = targetUrl.value || "./index.html";
+            iframe.title = "TIC-80";
+            frameMount.replaceChildren(iframe);
+            currentIframe = iframe;
+            return iframe;
+        }
+
+        async function waitForLoad(iframe) {
+            if (iframe.contentWindow && iframe.contentDocument?.readyState === "complete") return;
+            await new Promise((resolve) => iframe.addEventListener("load", resolve, { once: true }));
+        }
+
+        async function mountIframe() {
+            const iframe = ensureIframe();
+            await waitForLoad(iframe);
+            await controller.bindIframe(iframe, {
+                owned: true,
+                origin: "*",
+                removeOwnedTarget: () => {
+                    iframe.remove();
+                    if (currentIframe === iframe) currentIframe = null;
+                },
+            });
+            appendLog("bindIframe", { src: iframe.src });
+        }
+
+        async function runAndLog(argv) {
+            appendLog("argv >", argv.join(" "));
+            const result = await controller.run(argv, { autoBindIframe: ensureIframe() });
+            appendLog("result <", result);
+            return result;
+        }
+
+        document.getElementById("mountButton").addEventListener("click", async () => {
+            try {
+                await mountIframe();
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("popupButton").addEventListener("click", async () => {
+            try {
+                await controller.openPopupTarget(targetUrl.value || "./index.html", { origin: "*" });
+                appendLog("popup", "Opened popup target and bound controller.");
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("startButton").addEventListener("click", async () => {
+            try {
+                await mountIframe();
+                await runAndLog(["start", "--json"]);
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("statusButton").addEventListener("click", async () => {
+            try {
+                appendLog("status <", await controller.status());
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("runButton").addEventListener("click", async () => {
+            try {
+                await mountIframe();
+                await runAndLog(["run", "--json"]);
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("cmdButton").addEventListener("click", async () => {
+            try {
+                await mountIframe();
+                await runAndLog(["cmd", commandInput.value, "--json"]);
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("toolsButton").addEventListener("click", async () => {
+            try {
+                await mountIframe();
+                appendLog("tools/list <", await controller.request("tools/list", {}));
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("stopButton").addEventListener("click", async () => {
+            try {
+                await runAndLog(["stop", "--json"]);
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+
+        document.getElementById("argvButton").addEventListener("click", async () => {
+            try {
+                const argv = argvInput.value.split(/\s+/).filter(Boolean);
+                await mountIframe();
+                await runAndLog(argv);
+            } catch (error) {
+                appendLog("error", error.message || String(error));
+            }
+        });
+        </script>
+    </body>
+</html>

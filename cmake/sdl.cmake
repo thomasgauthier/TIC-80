@@ -193,7 +193,13 @@ if(BUILD_SDL)
     endif()
 
     if(EMSCRIPTEN)
-        set_target_properties(${TIC80_TARGET} PROPERTIES LINK_FLAGS "-s WASM=1 -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s FETCH=1 --pre-js ${CMAKE_SOURCE_DIR}/build/html/prejs.js -lidbfs.js")
+        set(TIC80_EMSCRIPTEN_LINK_FLAGS "-s WASM=1 -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s FETCH=1 --pre-js ${CMAKE_SOURCE_DIR}/build/html/prejs.js -lidbfs.js")
+
+        if(BUILD_MCP_POSTMESSAGE)
+            target_compile_definitions(${TIC80_TARGET} PRIVATE BUILD_MCP_POSTMESSAGE=1)
+        endif()
+
+        set_target_properties(${TIC80_TARGET} PROPERTIES LINK_FLAGS "${TIC80_EMSCRIPTEN_LINK_FLAGS}")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -s USE_SDL=2")
 
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")

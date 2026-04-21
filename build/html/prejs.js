@@ -30,3 +30,188 @@ Module.showAddPopup = function(callback)
 		reader.readAsArrayBuffer(file);
 	};
 };
+
+(function() {
+	var root = typeof window !== "undefined" ? window : null;
+	var moduleObject = typeof Module !== "undefined" ? Module : null;
+
+	function createBridge() {
+		var queue = [];
+		var boundWindow = null;
+		var boundOrigin = "*";
+		var MAX_REQUEST_BYTES = 8192;
+
+		function hasControllerWindow() {
+			return !!boundWindow;
+		}
+
+		function isJsonRpcObject(value) {
+			return !!value
+				&& typeof value === "object"
+				&& !Array.isArray(value)
+				&& value.jsonrpc === "2.0";
+		}
+
+		function getMethodName(value) {
+			if(!isJsonRpcObject(value) || typeof value.method !== "string")
+				return "";
+			return value.method;
+		}
+
+		function canBindController(event) {
+			if(!event || !event.source || event.source === root)
+				return false;
+			if(!boundWindow || boundWindow === event.source)
+				return true;
+			if(boundWindow.closed)
+				return true;
+			return getMethodName(event.data) === "initialize";
+		}
+
+		function bindController(event) {
+			if(!canBindController(event))
+				return false;
+			boundWindow = event.source;
+			boundOrigin = event.origin || "*";
+			return true;
+		}
+
+		function clearBindingIfClosed() {
+			if(boundWindow && boundWindow.closed)
+			{
+				boundWindow = null;
+				boundOrigin = "*";
+			}
+		}
+
+		function sendJsonRpcError(targetWindow, targetOrigin, id, code, message) {
+			if(!targetWindow || !message) return;
+
+			targetWindow.postMessage({
+				jsonrpc: "2.0",
+				id: id === undefined ? null : id,
+				error: {
+					code: code,
+					message: message,
+				},
+			}, targetOrigin || "*");
+		}
+
+		function enqueueFromController(event) {
+			if(!isJsonRpcObject(event.data)) return;
+			clearBindingIfClosed();
+			if(!bindController(event)) return;
+
+			var serialized;
+
+			try
+			{
+				serialized = JSON.stringify(event.data);
+			}
+			catch(error)
+			{
+				return;
+			}
+
+			if(typeof serialized !== "string") return;
+
+			if(lengthBytesUTF8(serialized) + 1 > MAX_REQUEST_BYTES)
+			{
+				sendJsonRpcError(boundWindow, boundOrigin, event.data.id, -32600, "Request too large");
+				return;
+			}
+
+			queue.push(serialized);
+		}
+
+		function attachListener() {
+			if(!root || !root.addEventListener) return;
+			root.addEventListener("message", enqueueFromController);
+		}
+
+		function copyToHeap(serialized, buffer, bufferSize) {
+			var required = lengthBytesUTF8(serialized) + 1;
+
+			if(!buffer || bufferSize <= 0) return required;
+			if(required > bufferSize) return required;
+
+			stringToUTF8(serialized, buffer, bufferSize);
+			return required;
+		}
+
+		function peekRequiredBytes() {
+			if(!queue.length) return 0;
+			return lengthBytesUTF8(queue[0]) + 1;
+		}
+
+		function popIntoBuffer(buffer, bufferSize) {
+			if(!queue.length) return 0;
+
+			var serialized = queue[0];
+			var required = copyToHeap(serialized, buffer, bufferSize);
+
+			if(required > bufferSize) return required;
+
+			queue.shift();
+			return required;
+		}
+
+		function sendSerializedResponse(serialized) {
+			var message;
+
+			clearBindingIfClosed();
+			if(!hasControllerWindow()) return 0;
+			if(typeof serialized !== "string" || !serialized.length) return 0;
+
+			try
+			{
+				message = JSON.parse(serialized);
+			}
+			catch(error)
+			{
+				return 0;
+			}
+
+			if(!isJsonRpcObject(message)) return 0;
+
+			boundWindow.postMessage(message, boundOrigin);
+			return 1;
+		}
+
+		return {
+			attachListener: attachListener,
+			hasControllerWindow: hasControllerWindow,
+			getBindingState: function() {
+				clearBindingIfClosed();
+				return {
+					bound: !!boundWindow,
+					origin: boundOrigin,
+				};
+			},
+			clearBinding: function() {
+				boundWindow = null;
+				boundOrigin = "*";
+			},
+			hasPendingRequests: function() {
+				return queue.length > 0;
+			},
+			getQueueLength: function() {
+				return queue.length;
+			},
+			peekNextRequestSize: peekRequiredBytes,
+			popNextRequestIntoBuffer: popIntoBuffer,
+			popNextSerializedRequest: function() {
+				return queue.length ? queue.shift() : null;
+			},
+			sendSerializedResponse: sendSerializedResponse,
+		};
+	}
+
+	var bridge = createBridge();
+	bridge.attachListener();
+
+	if(moduleObject)
+	{
+		moduleObject.tic80McpBridge = bridge;
+	}
+})();

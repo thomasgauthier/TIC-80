@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>TIC-80 Browser tic80ctl Demo</title>
+        <style>
+        :root {
+            color-scheme: light;
+            --bg: #f7f1e3;
+            --panel: #fffaf0;
+            --ink: #22201d;
+            --accent: #b5513d;
+            --accent-2: #1f6f8b;
+            --border: rgba(34, 32, 29, 0.18);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Georgia, "Times New Roman", serif;
+            background:
+                radial-gradient(circle at top left, rgba(181, 81, 61, 0.22), transparent 24rem),
+                radial-gradient(circle at bottom right, rgba(31, 111, 139, 0.18), transparent 26rem),
+                var(--bg);
+            color: var(--ink);
+            min-height: 100vh;
+        }
+
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1.25rem 3rem;
+            display: grid;
+            gap: 1rem;
+        }
+
+        .panel {
+            background: color-mix(in srgb, var(--panel) 92%, white);
+            border: 1px solid var(--border);
+            border-radius: 1.25rem;
+            box-shadow: 0 1.25rem 3rem rgba(34, 32, 29, 0.08);
+            padding: 1rem;
+        }
+
+        h1, h2, p {
+            margin-top: 0;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        button {
+            border: 0;
+            border-radius: 999px;
+            padding: 0.75rem 1rem;
+            font: inherit;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fffaf0;
+        }
+
+        button.secondary {
+            background: var(--accent-2);
+        }
+
+        .layout {
+            display: grid;
+            gap: 1rem;
+            grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
+        }
+
+        .frame-host {
+            min-height: 24rem;
+            border: 1px dashed var(--border);
+            border-radius: 1rem;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        .tic80ctl-demo-frame {
+            width: 100%;
+            min-height: 24rem;
+            border: 0;
+        }
+
+        pre, textarea {
+            width: 100%;
+            margin: 0;
+            border-radius: 0.9rem;
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.75);
+            color: inherit;
+            padding: 0.85rem;
+            font: 0.95rem/1.45 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        }
+
+        textarea {
+            min-height: 18rem;
+            resize: vertical;
+        }
+
+        .hint {
+            opacity: 0.78;
+            font-size: 0.95rem;
+        }
+
+        @media (max-width: 900px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+        </style>
+    </head>
+    <body>
+        <main>
+            <section class="panel">
+                <h1>Browser-hosted <code>tic80ctl</code> demo</h1>
+                <p>This host page binds an explicit TIC-80 browser target and drives MCP over <code>postMessage</code>. Use <code>?mock=1</code> to exercise the host flow without the wasm controller artifact.</p>
+                <div class="controls">
+                    <button id="start-iframe">Start owned iframe session</button>
+                    <button id="start-popup">Start owned popup session</button>
+                    <button class="secondary" id="status-button">Status</button>
+                    <button class="secondary" id="run-button">Run</button>
+                    <button class="secondary" id="stop-button">Stop</button>
+                </div>
+            </section>
+
+            <section class="layout">
+                <section class="panel">
+                    <h2>Iframe target</h2>
+                    <p class="hint">The iframe path binds an embedded <code>index.html</code> instance as the owned TIC-80 target.</p>
+                    <div class="frame-host" id="iframe-host"></div>
+                </section>
+
+                <section class="panel">
+                    <h2>Session status</h2>
+                    <pre id="status"></pre>
+                    <h2 style="margin-top: 1rem;">Host log</h2>
+                    <textarea id="log" spellcheck="false" readonly></textarea>
+                </section>
+            </section>
+        </main>
+
+        <script type="module">
+        import { bootTic80CtlBrowserDemo } from "./tic80ctl-browser-host.mjs";
+
+        window.addEventListener("DOMContentLoaded", () => {
+            bootTic80CtlBrowserDemo().catch((error) => {
+                const logElement = document.getElementById("log");
+                if (logElement) {
+                    logElement.value = `Failed to boot demo: ${error && error.message ? error.message : String(error)}`;
+                }
+            });
+        });
+        </script>
+    </body>
+</html>
