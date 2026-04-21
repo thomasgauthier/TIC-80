@@ -422,6 +422,8 @@ export async function bootTic80CtlBrowserDemo(options = {}) {
     const statusButton = documentObject.getElementById("status-button");
     const runButton = documentObject.getElementById("run-button");
     const stopButton = documentObject.getElementById("stop-button");
+    const cmdInput = documentObject.getElementById("cmd-input");
+    const cmdButton = documentObject.getElementById("cmd-button");
 
     const log = createLogWriter(logElement);
     const controllerFactory = await resolveControllerFactory({
@@ -491,6 +493,23 @@ export async function bootTic80CtlBrowserDemo(options = {}) {
 
     if (stopButton) {
         stopButton.addEventListener("click", () => runWithUi("stop", () => coordinator.stop()));
+    }
+
+    if (cmdButton && cmdInput) {
+        cmdButton.addEventListener("click", () => {
+            const rawArgs = (cmdInput.value || "").trim();
+            if (!rawArgs) return;
+            // Split args by spaces but respect quotes (a very simple parser)
+            const args = rawArgs.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+            // Remove quotes
+            const cleanArgs = args.map(arg => arg.replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1'));
+            runWithUi(`run ${cleanArgs[0]}`, () => coordinator.runCommand(cleanArgs));
+        });
+        cmdInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                cmdButton.click();
+            }
+        });
     }
 
     await refreshStatus();
