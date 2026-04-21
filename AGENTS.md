@@ -9,7 +9,6 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --claim  # Claim work atomically
 bd close <id>         # Complete work
-bd sync               # Sync with git
 ```
 
 ## Headless Build Rule (MANDATORY)
@@ -163,9 +162,8 @@ For more details, see README.md and docs/QUICKSTART.md.
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **Local sync only** - Run:
+4. **Local repo check only** - Run:
    ```bash
-   bd sync
    git status
    ```
 5. **Clean up** - Clear stashes, prune local branches if needed

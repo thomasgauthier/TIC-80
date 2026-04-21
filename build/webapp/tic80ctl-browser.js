@@ -1,5 +1,6 @@
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_CORE_MODULE_PATH = "./tic80ctl-browser-core.js";
+const POPUP_PORT_PROTOCOL = "tic80ctl-popup-port-v1";
 
 function makeError(message, extra = {}) {
     const error = new Error(message);
@@ -153,6 +154,94 @@ function formatStatusText(status) {
     ].join("\n");
 }
 
+function inferTargetOrigin(targetUrl, fallbackOrigin = "*") {
+    if (typeof targetUrl !== "string" || !targetUrl) {
+        return normalizeOrigin(fallbackOrigin);
+    }
+
+    if (/^(about:blank|data:|javascript:)/i.test(targetUrl)) {
+        return normalizeOrigin(fallbackOrigin);
+    }
+
+    try {
+        const baseHref = typeof window !== "undefined" && window.location
+            ? window.location.href
+            : "http://localhost/";
+        return normalizeOrigin(new URL(targetUrl, baseHref).origin);
+    } catch (_error) {
+        return normalizeOrigin(fallbackOrigin);
+    }
+}
+
+function defaultCreatePopupToken() {
+    if (typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.getRandomValues === "function") {
+        const bytes = new Uint8Array(16);
+        globalThis.crypto.getRandomValues(bytes);
+        return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    }
+
+    return [
+        Date.now().toString(16),
+        Math.random().toString(16).slice(2),
+        Math.random().toString(16).slice(2),
+    ].join("-");
+}
+
+function buildPopupTargetUrl(targetUrl, { token, controllerOrigin, baseHref } = {}) {
+    const resolvedBaseHref = baseHref
+        || (typeof window !== "undefined" && window.location ? window.location.href : "http://localhost/");
+    const url = new URL(targetUrl || "./index.html", resolvedBaseHref);
+    url.searchParams.set("tic80ctl_popup_token", token);
+
+    if (controllerOrigin && controllerOrigin !== "*") {
+        url.searchParams.set("tic80ctl_popup_origin", controllerOrigin);
+    } else {
+        url.searchParams.delete("tic80ctl_popup_origin");
+    }
+
+    return url.toString();
+}
+
+function createMessageChannelInstance(options = {}) {
+    if (typeof options.messageChannelFactory === "function") {
+        return options.messageChannelFactory();
+    }
+
+    if (typeof MessageChannel === "function") {
+        return new MessageChannel();
+    }
+
+    throw makeError("MessageChannel is unavailable in this browser.");
+}
+
+function attachPortListener(port, handler) {
+    if (!port || typeof handler !== "function") {
+        return;
+    }
+
+    if (typeof port.addEventListener === "function") {
+        port.addEventListener("message", handler);
+    } else {
+        port.onmessage = handler;
+    }
+
+    if (typeof port.start === "function") {
+        port.start();
+    }
+}
+
+function detachPortListener(port, handler) {
+    if (!port || typeof handler !== "function") {
+        return;
+    }
+
+    if (typeof port.removeEventListener === "function") {
+        port.removeEventListener("message", handler);
+    } else if (port.onmessage === handler) {
+        port.onmessage = null;
+    }
+}
+
 async function defaultReadTextFile(path) {
     const response = await fetch(path, {
         credentials: "same-origin",
@@ -187,6 +276,8 @@ function createTransportController(options = {}) {
         targetKind: null,
         owned: false,
         origin: "*",
+        transportMode: "window",
+        messagePort: null,
         initialized: false,
         closed: true,
         pending: new Map(),
@@ -194,6 +285,7 @@ function createTransportController(options = {}) {
         timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS,
         removeOwnedTarget: null,
         lastLoadTarget: "",
+        popupChannelToken: "",
     };
 
     function assertBoundTarget() {
@@ -207,10 +299,7 @@ function createTransportController(options = {}) {
         }
     }
 
-    function onMessage(event) {
-        if (event.source !== state.targetWindow) return;
-
-        const value = event.data;
+    function handleTransportMessage(value) {
         if (!value || typeof value !== "object") return;
         if (value.jsonrpc !== "2.0") return;
 
@@ -225,6 +314,165 @@ function createTransportController(options = {}) {
                 pending.resolve(value);
             }
         }
+    }
+
+    function onMessage(event) {
+        if (state.transportMode !== "window") return;
+        if (event.source !== state.targetWindow) return;
+        handleTransportMessage(event.data);
+    }
+
+    function onPortMessage(event) {
+        handleTransportMessage(event && event.data);
+    }
+
+    function closeMessagePort() {
+        if (!state.messagePort) {
+            state.transportMode = "window";
+            return;
+        }
+
+        detachPortListener(state.messagePort, onPortMessage);
+        try {
+            if (typeof state.messagePort.close === "function") {
+                state.messagePort.close();
+            }
+        } catch (_error) {
+            // Best-effort cleanup only.
+        }
+
+        state.messagePort = null;
+        state.transportMode = "window";
+        state.popupChannelToken = "";
+    }
+
+    function rejectPendingRequests(message) {
+        for (const [id, pending] of state.pending) {
+            clearTimeout(pending.timer);
+            pending.reject(makeError(message, { id }));
+        }
+        state.pending.clear();
+    }
+
+    function postTransportMessage(payload, transferList) {
+        assertBoundTarget();
+
+        if (state.transportMode === "port" && state.messagePort) {
+            state.messagePort.postMessage(payload);
+            return;
+        }
+
+        if (transferList && transferList.length > 0) {
+            state.targetWindow.postMessage(payload, state.origin, transferList);
+            return;
+        }
+
+        state.targetWindow.postMessage(payload, state.origin);
+    }
+
+    async function establishPopupMessageChannel(targetWindow, bindOptions = {}) {
+        const popupChannelToken = bindOptions.popupChannelToken;
+        if (!popupChannelToken) {
+            return;
+        }
+
+        const channel = createMessageChannelInstance(options);
+        const handshakeTimeoutMs = bindOptions.handshakeTimeoutMs || state.timeoutMs;
+
+        await new Promise((resolve, reject) => {
+            let settled = false;
+
+            function cleanup() {
+                detachPortListener(channel.port1, onReadyMessage);
+                window.removeEventListener("message", onWindowMessage);
+            }
+
+            function finish(error) {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                clearTimeout(timeoutId);
+                cleanup();
+
+                if (error) {
+                    try {
+                        if (typeof channel.port1.close === "function") {
+                            channel.port1.close();
+                        }
+                    } catch (_error) {
+                        // Ignore close errors during failed setup.
+                    }
+                    try {
+                        if (typeof channel.port2.close === "function") {
+                            channel.port2.close();
+                        }
+                    } catch (_error) {
+                        // Ignore close errors during failed setup.
+                    }
+                    reject(error);
+                    return;
+                }
+
+                state.messagePort = channel.port1;
+                state.transportMode = "port";
+                state.popupChannelToken = popupChannelToken;
+                attachPortListener(state.messagePort, onPortMessage);
+                resolve();
+            }
+
+            function onReadyMessage(event) {
+                const value = event && event.data;
+                if (!value || typeof value !== "object") {
+                    return;
+                }
+
+                if (value.tic80ctlBridge === POPUP_PORT_PROTOCOL) {
+                    if (value.type === "ready" && value.token === popupChannelToken) {
+                        finish();
+                        return;
+                    }
+
+                    if (value.type === "error" && value.token === popupChannelToken) {
+                        finish(makeError(value.message || "Popup MCP channel handshake failed."));
+                    }
+                    return;
+                }
+
+                handleTransportMessage(value);
+            }
+
+            function onWindowMessage(event) {
+                const value = event && event.data;
+                if (!value || typeof value !== "object") {
+                    return;
+                }
+
+                if (value.tic80ctlBridge === POPUP_PORT_PROTOCOL && value.type === "request_port" && value.token === popupChannelToken) {
+                    try {
+                        targetWindow.postMessage(
+                            {
+                                tic80ctlBridge: POPUP_PORT_PROTOCOL,
+                                type: "connect",
+                                token: popupChannelToken,
+                            },
+                            state.origin,
+                            [channel.port2]
+                        );
+                    } catch (error) {
+                        finish(error instanceof Error ? error : makeError(String(error)));
+                    }
+                }
+            }
+
+            attachPortListener(channel.port1, onReadyMessage);
+            window.addEventListener("message", onWindowMessage);
+
+            const timeoutId = window.setTimeout(() => {
+                finish(makeError("Timed out establishing popup MCP channel."));
+            }, handshakeTimeoutMs);
+        });
     }
 
     window.addEventListener("message", onMessage);
@@ -252,7 +500,7 @@ function createTransportController(options = {}) {
             }, timeoutMs);
 
             state.pending.set(id, { resolve, reject, timer, method });
-            state.targetWindow.postMessage(payload, state.origin);
+            postTransportMessage(payload);
         });
     }
 
@@ -267,7 +515,7 @@ function createTransportController(options = {}) {
             payload.params = params;
         }
 
-        state.targetWindow.postMessage(payload, state.origin);
+        postTransportMessage(payload);
     }
 
     async function initialize() {
@@ -292,6 +540,7 @@ function createTransportController(options = {}) {
             throw makeError("bindTarget requires a Window-compatible handle.");
         }
 
+        closeMessagePort();
         state.targetWindow = handle;
         state.targetKind = bindOptions.kind || "iframe";
         state.owned = Boolean(bindOptions.owned);
@@ -302,6 +551,11 @@ function createTransportController(options = {}) {
             ? bindOptions.removeOwnedTarget
             : null;
         state.lastLoadTarget = "";
+        state.popupChannelToken = "";
+
+        if (state.targetKind === "popup" && bindOptions.popupChannelToken) {
+            await establishPopupMessageChannel(handle, bindOptions);
+        }
     }
 
     async function bindIframe(iframe, bindOptions = {}) {
@@ -319,7 +573,19 @@ function createTransportController(options = {}) {
 
     async function openPopupTarget(url, popupOptions = {}) {
         const features = popupOptions.features || "popup,width=960,height=720";
-        const popup = window.open(url, popupOptions.name || "tic80ctl-popup", features);
+        const popupChannelToken = popupOptions.popupChannelToken
+            || (typeof options.createPopupToken === "function" ? options.createPopupToken() : defaultCreatePopupToken());
+        const controllerOrigin = normalizeOrigin(
+            popupOptions.controllerOrigin
+            || options.controllerOrigin
+            || (typeof window !== "undefined" && window.location ? window.location.origin : "*")
+        );
+        const popupUrl = buildPopupTargetUrl(url, {
+            token: popupChannelToken,
+            controllerOrigin,
+            baseHref: popupOptions.baseHref,
+        });
+        const popup = window.open(popupUrl, popupOptions.name || "tic80ctl-popup", features);
         if (!popup) {
             throw makeError("window.open returned null. The popup may have been blocked.");
         }
@@ -327,7 +593,9 @@ function createTransportController(options = {}) {
         await bindTarget(popup, {
             kind: "popup",
             owned: true,
-            origin: popupOptions.origin || "*",
+            origin: popupOptions.origin || inferTargetOrigin(url, controllerOrigin),
+            popupChannelToken,
+            handshakeTimeoutMs: popupOptions.handshakeTimeoutMs,
         });
 
         return popup;
@@ -356,11 +624,8 @@ function createTransportController(options = {}) {
     }
 
     async function stop() {
-        for (const [id, pending] of state.pending) {
-            clearTimeout(pending.timer);
-            pending.reject(makeError("Session stopped before response completed.", { id }));
-        }
-        state.pending.clear();
+        rejectPendingRequests("Session stopped before response completed.");
+        closeMessagePort();
 
         if (state.owned && state.targetWindow) {
             if (state.targetKind === "popup" && typeof state.targetWindow.close === "function") {
@@ -393,6 +658,7 @@ function createTransportController(options = {}) {
             initialized: state.initialized,
             running: Boolean(state.targetWindow) && !state.closed,
             closed: state.closed,
+            transportMode: state.transportMode,
         };
     }
 

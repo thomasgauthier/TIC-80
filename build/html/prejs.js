@@ -37,12 +37,45 @@ Module.showAddPopup = function(callback)
 
 	function createBridge() {
 		var queue = [];
-		var boundWindow = null;
-		var boundOrigin = "*";
+		var controllerWindow = null;
+		var controllerOrigin = "*";
+		var controllerPort = null;
 		var MAX_REQUEST_BYTES = 8192;
+		var POPUP_PORT_PROTOCOL = "tic80ctl-popup-port-v1";
+
+		function readPopupHandshakeConfig() {
+			if(!root || !root.location || typeof URLSearchParams === "undefined")
+				return { token: "", origin: "" };
+
+			try
+			{
+				var params = new URLSearchParams(root.location.search || "");
+				return {
+					token: params.get("tic80ctl_popup_token") || "",
+					origin: params.get("tic80ctl_popup_origin") || "",
+				};
+			}
+			catch(error)
+			{
+				return { token: "", origin: "" };
+			}
+		}
+
+		var popupHandshake = readPopupHandshakeConfig();
+
+		function requestPopupPort() {
+			if(popupHandshake.token && root && root.opener) {
+				root.opener.postMessage({
+					tic80ctlBridge: POPUP_PORT_PROTOCOL,
+					type: "request_port",
+					token: popupHandshake.token
+				}, popupHandshake.origin || "*");
+			}
+		}
 
 		function hasControllerWindow() {
-			return !!boundWindow;
+			clearBindingIfClosed();
+			return !!controllerPort || !!controllerWindow;
 		}
 
 		function isJsonRpcObject(value) {
@@ -52,55 +85,153 @@ Module.showAddPopup = function(callback)
 				&& value.jsonrpc === "2.0";
 		}
 
+		function isBridgeControlMessage(value) {
+			return !!value
+				&& typeof value === "object"
+				&& !Array.isArray(value)
+				&& value.tic80ctlBridge === POPUP_PORT_PROTOCOL;
+		}
+
 		function getMethodName(value) {
 			if(!isJsonRpcObject(value) || typeof value.method !== "string")
 				return "";
 			return value.method;
 		}
 
-		function canBindController(event) {
+		function clearControllerPort() {
+			if(controllerPort)
+			{
+				controllerPort.onmessage = null;
+				try
+				{
+					controllerPort.close();
+				}
+				catch(error)
+				{
+				}
+			}
+
+			controllerPort = null;
+		}
+
+		function clearControllerWindow() {
+			controllerWindow = null;
+			controllerOrigin = "*";
+		}
+
+		function canBindWindowController(event) {
 			if(!event || !event.source || event.source === root)
 				return false;
-			if(!boundWindow || boundWindow === event.source)
+			if(controllerPort)
+				return controllerWindow === event.source;
+			if(!controllerWindow || controllerWindow === event.source)
 				return true;
-			if(boundWindow.closed)
+			if(controllerWindow.closed)
 				return true;
 			return getMethodName(event.data) === "initialize";
 		}
 
-		function bindController(event) {
-			if(!canBindController(event))
+		function bindWindowController(event) {
+			if(!canBindWindowController(event))
 				return false;
-			boundWindow = event.source;
-			boundOrigin = event.origin || "*";
+
+			controllerWindow = event.source;
+			controllerOrigin = event.origin || "*";
 			return true;
 		}
 
 		function clearBindingIfClosed() {
-			if(boundWindow && boundWindow.closed)
+			if(controllerWindow && controllerWindow.closed && !controllerPort)
 			{
-				boundWindow = null;
-				boundOrigin = "*";
+				clearControllerWindow();
 			}
 		}
 
-		function sendJsonRpcError(targetWindow, targetOrigin, id, code, message) {
-			if(!targetWindow || !message) return;
-
-			targetWindow.postMessage({
+		function buildJsonRpcErrorMessage(id, code, message) {
+			return {
 				jsonrpc: "2.0",
 				id: id === undefined ? null : id,
 				error: {
 					code: code,
 					message: message,
 				},
-			}, targetOrigin || "*");
+			};
+		}
+
+		function sendJsonRpcErrorToWindow(targetWindow, targetOrigin, id, code, message) {
+			if(!targetWindow || !message) return;
+
+			targetWindow.postMessage(buildJsonRpcErrorMessage(id, code, message), targetOrigin || "*");
+		}
+
+		function sendJsonRpcErrorToPort(port, id, code, message) {
+			if(!port || !message) return;
+
+			port.postMessage(buildJsonRpcErrorMessage(id, code, message));
+		}
+
+		function enqueueSerializedRequest(serialized, rejectOversized) {
+			if(typeof serialized !== "string") return false;
+
+			if(lengthBytesUTF8(serialized) + 1 > MAX_REQUEST_BYTES)
+			{
+				if(rejectOversized)
+					rejectOversized();
+				return false;
+			}
+
+			queue.push(serialized);
+			return true;
+		}
+
+		function attachControllerPort(port, sourceWindow, origin) {
+			clearControllerPort();
+			controllerPort = port;
+			controllerWindow = sourceWindow || controllerWindow;
+			controllerOrigin = origin || controllerOrigin || "*";
+
+			if(controllerPort.start)
+				controllerPort.start();
+
+			controllerPort.onmessage = enqueueFromPort;
+		}
+
+		function tryBindPopupPort(event) {
+			var data = event && event.data;
+
+			if(!root || !root.opener || !popupHandshake.token)
+				return false;
+			if(event.source !== root.opener)
+				return false;
+			if(!isBridgeControlMessage(data) || data.type !== "connect")
+				return false;
+			if(data.token !== popupHandshake.token)
+				return false;
+			if(popupHandshake.origin && event.origin !== popupHandshake.origin)
+				return false;
+
+			var port = event.ports && event.ports[0];
+			if(!port)
+				return true;
+
+			attachControllerPort(port, event.source, event.origin || "*");
+			controllerPort.postMessage({
+				tic80ctlBridge: POPUP_PORT_PROTOCOL,
+				type: "ready",
+				token: popupHandshake.token,
+			});
+
+			return true;
 		}
 
 		function enqueueFromController(event) {
+			if(tryBindPopupPort(event))
+				return;
+			if(controllerPort)
+				return;
 			if(!isJsonRpcObject(event.data)) return;
 			clearBindingIfClosed();
-			if(!bindController(event)) return;
+			if(!bindWindowController(event)) return;
 
 			var serialized;
 
@@ -113,20 +244,34 @@ Module.showAddPopup = function(callback)
 				return;
 			}
 
-			if(typeof serialized !== "string") return;
+			enqueueSerializedRequest(serialized, function() {
+				sendJsonRpcErrorToWindow(controllerWindow, controllerOrigin, event.data.id, -32600, "Request too large");
+			});
+		}
 
-			if(lengthBytesUTF8(serialized) + 1 > MAX_REQUEST_BYTES)
+		function enqueueFromPort(event) {
+			if(!controllerPort || !isJsonRpcObject(event.data)) return;
+
+			var serialized;
+
+			try
 			{
-				sendJsonRpcError(boundWindow, boundOrigin, event.data.id, -32600, "Request too large");
+				serialized = JSON.stringify(event.data);
+			}
+			catch(error)
+			{
 				return;
 			}
 
-			queue.push(serialized);
+			enqueueSerializedRequest(serialized, function() {
+				sendJsonRpcErrorToPort(controllerPort, event.data.id, -32600, "Request too large");
+			});
 		}
 
 		function attachListener() {
 			if(!root || !root.addEventListener) return;
 			root.addEventListener("message", enqueueFromController);
+			requestPopupPort();
 		}
 
 		function copyToHeap(serialized, buffer, bufferSize) {
@@ -174,7 +319,11 @@ Module.showAddPopup = function(callback)
 
 			if(!isJsonRpcObject(message)) return 0;
 
-			boundWindow.postMessage(message, boundOrigin);
+			if(controllerPort)
+				controllerPort.postMessage(message);
+			else
+				controllerWindow.postMessage(message, controllerOrigin);
+
 			return 1;
 		}
 
@@ -184,13 +333,14 @@ Module.showAddPopup = function(callback)
 			getBindingState: function() {
 				clearBindingIfClosed();
 				return {
-					bound: !!boundWindow,
-					origin: boundOrigin,
+					bound: !!controllerPort || !!controllerWindow,
+					origin: controllerOrigin,
+					transport: controllerPort ? "port" : controllerWindow ? "window" : "none",
 				};
 			},
 			clearBinding: function() {
-				boundWindow = null;
-				boundOrigin = "*";
+				clearControllerPort();
+				clearControllerWindow();
 			},
 			hasPendingRequests: function() {
 				return queue.length > 0;

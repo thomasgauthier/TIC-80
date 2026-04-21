@@ -592,6 +592,9 @@ jobs:
       - name: Verify browser-hosted tic80ctl web wiring
         run: tools/mcp/tic80ctl_browser_host_smoke.sh build/webapp
 
+      - name: Verify popup MessageChannel browser transport
+        run: tools/mcp/web_popup_message_channel_smoke.sh build/webapp
+
       - name: Deploy
         uses: actions/upload-artifact@v4
         with:

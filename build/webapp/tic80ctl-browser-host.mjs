@@ -1,4 +1,6 @@
 const DEFAULT_TARGET_URL = "./index.html";
+const POPUP_TOKEN_PARAM = "tic80ctl_popup_token";
+const POPUP_ORIGIN_PARAM = "tic80ctl_popup_origin";
 
 function noop() {}
 
@@ -16,6 +18,36 @@ function inferOrigin(targetUrl, fallbackOrigin) {
     } catch (_error) {
         return fallbackOrigin || "*";
     }
+}
+
+function createPopupToken(windowObject) {
+    const cryptoObject = windowObject && windowObject.crypto;
+    if (cryptoObject && typeof cryptoObject.getRandomValues === "function") {
+        const bytes = new Uint8Array(16);
+        cryptoObject.getRandomValues(bytes);
+        return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    }
+
+    return [
+        Date.now().toString(16),
+        Math.random().toString(16).slice(2),
+        Math.random().toString(16).slice(2),
+    ].join("-");
+}
+
+function buildPopupTargetUrl(targetUrl, parentOrigin, token, fallbackBaseHref) {
+    const baseHref = fallbackBaseHref
+        || (typeof window !== "undefined" && window.location ? window.location.href : "http://localhost/");
+    const url = new URL(targetUrl || DEFAULT_TARGET_URL, baseHref);
+    url.searchParams.set(POPUP_TOKEN_PARAM, token);
+
+    if (parentOrigin && parentOrigin !== "*") {
+        url.searchParams.set(POPUP_ORIGIN_PARAM, parentOrigin);
+    } else {
+        url.searchParams.delete(POPUP_ORIGIN_PARAM);
+    }
+
+    return url.toString();
 }
 
 export function createMockTic80CtlBrowser() {
@@ -176,6 +208,7 @@ export function createBrowserTargetCoordinator(options = {}) {
             kind,
             owned: !!nextTarget.owned,
             origin: nextTarget.origin,
+            popupChannelToken: nextTarget.popupChannelToken,
         });
 
         target = {
@@ -310,7 +343,14 @@ function createPopupTargetHost(options) {
             throw new Error("window.open() is unavailable.");
         }
 
-        const popup = windowObject.open(targetUrl, "tic80ctl-browser-popup", "popup,width=980,height=760");
+        const popupChannelToken = createPopupToken(windowObject);
+        const popupTargetUrl = buildPopupTargetUrl(
+            targetUrl,
+            parentOrigin,
+            popupChannelToken,
+            windowObject.location && windowObject.location.href
+        );
+        const popup = windowObject.open(popupTargetUrl, "tic80ctl-browser-popup", "popup,width=980,height=760");
         if (!popup) {
             throw new Error("Popup was blocked by the browser.");
         }
@@ -349,6 +389,7 @@ function createPopupTargetHost(options) {
             owned: true,
             windowHandle: popup,
             origin: inferOrigin(targetUrl, parentOrigin),
+            popupChannelToken,
             popup,
         };
     };

@@ -19,10 +19,14 @@ node --input-type=module -e "import('${JS_PATH}').then((m) => { if (typeof m.cre
 
 grep -q 'bindTarget' "$JS_PATH"
 grep -q 'openPopupTarget' "$JS_PATH"
+grep -q 'MessageChannel' "$JS_PATH"
+grep -q 'tic80ctl_popup_token' "$JS_PATH"
 grep -q 'run(argv' "$JS_PATH"
 grep -q 'tic80ctl start' "$HTML_PATH"
 grep -q 'Send \"run\" via MCP' "$HTML_PATH"
 grep -q 'createTic80CtlBrowser' "$HTML_PATH"
+
+bash "$ROOT_DIR/tools/mcp/web_popup_message_channel_smoke.sh" "$JS_PATH"
 
 echo "Browser tic80ctl assets smoke test passed."
 echo "js: $JS_PATH"

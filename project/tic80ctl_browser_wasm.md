@@ -46,15 +46,19 @@ That keeps the browser asset useful now, while the future wasm `tic80ctl` runtim
 - `status` reports binding and initialization state.
 - `stop` closes/removes the target when the controller owns it; otherwise it detaches.
 
+Transport split:
+- iframe targets keep using the parent-window raw `postMessage` MCP bridge
+- popup targets now use a tokenized `MessageChannel` handshake and then carry MCP JSON-RPC over the dedicated `MessagePort`
+
 ## Demo Page
 `build/webapp/tic80ctl-demo.html` hosts a TIC-80 iframe and exercises the browser controller:
 - mounts an iframe pointing at `./index.html`
 - issues `tic80ctl start`
 - sends `run` and arbitrary `cmd` requests
 - shows raw `tools/list`
-- supports an experimental popup target button
+- supports a popup target button backed by the `MessageChannel` popup transport
 
-The iframe path should remain compatible with the current parent-window browser MCP bridge. Popup control is included as API surface for the upcoming explicit-bound-controller transport work.
+The iframe path remains on the simple parent-window bridge. Popup control now requires the dedicated handshake path because modern browsers are stricter about opener/window messaging than the iframe case.
 
 ## Smoke Verification
 Run:

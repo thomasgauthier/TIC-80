@@ -3,6 +3,8 @@
 ## Goal
 Provide a browser host/demo layer for the wasm `tic80ctl` runtime so the web build can drive a TIC-80 Emscripten target over MCP `postMessage`.
 
+The popup path now uses a dedicated `MessageChannel` handshake instead of sending MCP JSON-RPC over the global window message bus.
+
 ## Scope
 - Static webapp host assets under `build/webapp/`
 - Browser smoke coverage under `tools/mcp/`
@@ -22,6 +24,7 @@ Out of scope:
   - Falls back to importing `./tic80ctl-browser.js` or `./tic80ctl-browser.mjs`
   - Provides a mock controller path via `?mock=1`
   - Coordinates owned iframe/popup lifecycle and explicit `bindTarget(...)`
+  - Opens popup targets with a per-session tokenized URL so the popup can validate the opener before accepting a transferred `MessagePort`
 
 The host module expects the runtime-facing API below once the wasm controller lands:
 
@@ -61,6 +64,11 @@ Then open:
 - iframe ownership cleanup fires on session replacement
 - popup ownership cleanup fires on `stop`
 - the coordinator issues `bindTarget`, `run(["start"])`, and `run(["run"])`
+
+`tools/mcp/web_popup_message_channel_smoke.sh` verifies:
+- popup URLs include the handshake token and opener origin
+- popup startup transfers a `MessagePort`
+- popup `initialize` and `tools/call` traffic stay off the global window bus
 
 ## CI Wiring
 Run the host smoke after the existing web MCP smoke in both:

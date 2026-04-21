@@ -15,10 +15,21 @@ When enabled, the SDL Emscripten target now:
 
 ## Browser Transport Contract
 The browser bridge in `build/html/prejs.js`:
-- accepts only raw JSON-RPC 2.0 object messages from a bound browser controller window
+- accepts raw JSON-RPC 2.0 object messages from a bound browser controller
 - serializes accepted requests and queues them for native consumption
 - rejects oversized requests locally with JSON-RPC error `-32600`
-- sends raw JSON-RPC response objects back to the bound controller with `postMessage`
+- sends raw JSON-RPC response objects back through the active browser transport
+
+Browser transports currently split by topology:
+- iframe / parent window:
+  - direct `window.postMessage` carrying raw JSON-RPC objects
+- popup / opener window:
+  - a one-time `window.postMessage` handshake that transfers a `MessagePort`
+  - all subsequent MCP JSON-RPC traffic runs over that dedicated `MessagePort`
+  - the popup validates the transferred-channel handshake with:
+    - `window.opener`
+    - a per-popup token in `tic80ctl_popup_token`
+    - an optional exact opener origin in `tic80ctl_popup_origin`
 
 The native MCP loop in `src/system/sdl/main.c`:
 - is transport-agnostic at the request-handler layer
@@ -42,3 +53,14 @@ cmake --build . --parallel
 The smoke script verifies:
 - `build/html/prejs.js` still contains the JSON-RPC browser bridge and exported C interop functions
 - the generated `tic80.js` contains the emitted browser bridge code
+
+Popup-specific browser verification:
+
+```bash
+../tools/mcp/web_popup_message_channel_smoke.sh webapp
+```
+
+This verifies the browser `tic80ctl` runtime:
+- opens popup targets with `tic80ctl_popup_token` and `tic80ctl_popup_origin`
+- establishes a dedicated `MessageChannel`
+- sends `initialize` and `tools/call` over the `MessagePort` instead of the global window bus
