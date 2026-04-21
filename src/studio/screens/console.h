@@ -44,6 +44,8 @@ struct RunCommandMcpResult
     EditorMode modeBefore;
     EditorMode modeAfter;
     bool coreInitializedAfter;
+    bool runtimeWaited;
+    bool runtimeReadyAfterWait;
     char errorKind[64];
 };
 

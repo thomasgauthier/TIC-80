@@ -44,6 +44,12 @@ static void onError(void* data, const char* info)
 #if defined(BUILD_EDITORS)
     Run* run = (Run*)data;
 
+    if(run->console && run->console->mcp.playtest.active && run->console->mcp.playtest.consoleFile)
+    {
+        fprintf(run->console->mcp.playtest.consoleFile, "%s\n", info ? info : "unknown error");
+        fflush(run->console->mcp.playtest.consoleFile);
+    }
+
     if(run->console == NULL || !run->console->mcp.command.active)
     {
         if(run->console)

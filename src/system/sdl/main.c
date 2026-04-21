@@ -244,6 +244,8 @@ static char* buildRunCommandStructuredContentJson(const RunCommandMcpResult* res
         || !sbAppend(&sb, ",\"mode_before\":") || !sbAppendJsonString(&sb, runCommandModeName(result->modeBefore))
         || !sbAppend(&sb, ",\"mode_after\":") || !sbAppendJsonString(&sb, runCommandModeName(result->modeAfter))
         || !sbAppend(&sb, ",\"core_initialized_after\":") || !sbAppend(&sb, result->coreInitializedAfter ? "true" : "false")
+        || !sbAppend(&sb, ",\"runtime_waited\":") || !sbAppend(&sb, result->runtimeWaited ? "true" : "false")
+        || !sbAppend(&sb, ",\"runtime_ready_after_wait\":") || !sbAppend(&sb, result->runtimeReadyAfterWait ? "true" : "false")
         || !sbAppend(&sb, ",\"error_kind\":") || !sbAppendJsonString(&sb, result->errorKind)
         || !sbAppend(&sb, ",\"text\":") || !sbAppendJsonString(&sb, text ? text : "")
         || !sbAppend(&sb, "}"))

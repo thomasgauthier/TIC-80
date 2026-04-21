@@ -2744,6 +2744,155 @@ static bool print_structured_lines(const char* structured)
     return printed;
 }
 
+static bool text_line_value(const char* text, const char* key, char* out, size_t out_size)
+{
+    size_t key_len = strlen(key);
+    const char* p = text;
+
+    while(p && *p)
+    {
+        const char* line_end = strchr(p, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - p) : strlen(p);
+
+        if(line_len > key_len && strncmp(p, key, key_len) == 0 && p[key_len] == '=')
+        {
+            size_t value_len = line_len - key_len - 1;
+            if(value_len >= out_size)
+                value_len = out_size - 1;
+            memcpy(out, p + key_len + 1, value_len);
+            out[value_len] = '\0';
+            return true;
+        }
+
+        p = line_end ? line_end + 1 : NULL;
+    }
+
+    if(out_size)
+        out[0] = '\0';
+    return false;
+}
+
+static const char* playtest_failure_phase(const char* text)
+{
+    if(strstr(text, "failed to reset cart into run mode"))
+        return "cart restart";
+    if(strstr(text, "failed to initialize cart runtime before enabling DEBUG_MODE"))
+        return "cart runtime startup";
+    if(strstr(text, "runtime not initialized"))
+        return "cart runtime startup";
+    if(strstr(text, "frameadvance() requires TIC-80 to be in run mode"))
+        return "frame advance";
+    if(strstr(text, "failed to initialize playtest runtime"))
+        return "playtest harness startup";
+    return "playtest";
+}
+
+static const char* playtest_failure_hint(const char* text)
+{
+    if(strstr(text, "runtime not initialized") || strstr(text, "failed to initialize cart runtime"))
+        return "the cart did not reach a usable TIC() runtime; inspect the cart-side Lua error in console_path or rerun `tic80ctl run`";
+    if(strstr(text, "failed to reset cart into run mode"))
+        return "`tic80ctl run` failed while playtest tried to restart the loaded cart";
+    if(strstr(text, "frameadvance() requires TIC-80 to be in run mode"))
+        return "the episode advanced a frame after the cart left run mode or crashed";
+    return "inspect log_path and console_path for the route segment and cart-side traces";
+}
+
+static bool extract_playtest_text(const ServerResponse* response, char* text, size_t text_size)
+{
+    if(!extract_first_text(response->mcp_raw, text, text_size))
+        return false;
+    trim_text_in_place(text);
+    return text[0] != '\0';
+}
+
+static char* first_nonempty_line_local(const char* path)
+{
+    FILE* f = fopen(path, "r");
+    if(!f)
+        return NULL;
+
+    char buffer[2048];
+    while(fgets(buffer, sizeof(buffer), f))
+    {
+        char* start = buffer;
+        while(*start && isspace((unsigned char)*start))
+            start++;
+
+        char* end = start + strlen(start);
+        while(end > start && isspace((unsigned char)end[-1]))
+            *--end = '\0';
+
+        if(*start)
+        {
+            char* result = strdup(start);
+            fclose(f);
+            return result;
+        }
+    }
+
+    fclose(f);
+    return NULL;
+}
+
+static void append_playtest_diagnostics_json(StringBuilder* sb, const ServerResponse* response)
+{
+    char text[262144];
+    if(!response->is_error || !extract_playtest_text(response, text, sizeof(text)))
+        return;
+
+    char status[64] = {0};
+    char message[512] = {0};
+    char console_path[PATH_MAX] = {0};
+    text_line_value(text, "status", status, sizeof(status));
+    text_line_value(text, "message", message, sizeof(message));
+    text_line_value(text, "console_path", console_path, sizeof(console_path));
+    char* console_first = console_path[0] ? first_nonempty_line_local(console_path) : NULL;
+    char* console_tail = console_path[0] ? last_nonempty_line(console_path) : NULL;
+
+    sb_append(sb, ",\"diagnostics\":{");
+    sb_append(sb, "\"phase\":");
+    sb_append_json_string(sb, playtest_failure_phase(text));
+    sb_append(sb, ",\"status\":");
+    sb_append_json_string(sb, status);
+    sb_append(sb, ",\"message\":");
+    sb_append_json_string(sb, message);
+    sb_append(sb, ",\"console_path\":");
+    sb_append_json_string(sb, console_path);
+    sb_append(sb, ",\"console_first\":");
+    sb_append_json_string(sb, console_first ? console_first : "");
+    sb_append(sb, ",\"console_tail\":");
+    sb_append_json_string(sb, console_tail ? console_tail : "");
+    sb_append(sb, ",\"hint\":");
+    sb_append_json_string(sb, playtest_failure_hint(text));
+    sb_append(sb, "}");
+    free(console_first);
+    free(console_tail);
+}
+
+static void print_playtest_diagnostics_human(const ServerResponse* response)
+{
+    char text[262144];
+    if(!response->is_error || !extract_playtest_text(response, text, sizeof(text)))
+        return;
+
+    char console_path[PATH_MAX] = {0};
+    text_line_value(text, "console_path", console_path, sizeof(console_path));
+    char* console_first = console_path[0] ? first_nonempty_line_local(console_path) : NULL;
+    char* console_tail = console_path[0] ? last_nonempty_line(console_path) : NULL;
+
+    printf("playtest failed during %s\n", playtest_failure_phase(text));
+    if(console_first && *console_first)
+        printf("console first: %s\n", console_first);
+    if(console_tail && *console_tail)
+        printf("console tail: %s\n", console_tail);
+    printf("hint: %s\n", playtest_failure_hint(text));
+    if(console_path[0])
+        printf("console_path: %s\n", console_path);
+    free(console_first);
+    free(console_tail);
+}
+
 static void print_command_diagnostics_human(const char* request_text, const ServerResponse* response)
 {
     char verb[64] = {0};
@@ -2842,6 +2991,8 @@ static int print_mcp_response(const char* command_name, const char* request_text
         sb_append(&sb, response->mcp_raw);
         if(request_text && *request_text)
             append_command_diagnostics_json(&sb, request_text, response);
+        else if(strcmp(command_name, "run_playtest_episode") == 0)
+            append_playtest_diagnostics_json(&sb, response);
         sb_append(&sb, "}");
         printf("%s\n", sb.data ? sb.data : "{\"command\":\"run_command\",\"response\":{}}");
         sb_free(&sb);
@@ -2871,6 +3022,8 @@ static int print_mcp_response(const char* command_name, const char* request_text
 
         if(request_text && *request_text)
             print_command_diagnostics_human(request_text, response);
+        else if(strcmp(command_name, "run_playtest_episode") == 0)
+            print_playtest_diagnostics_human(response);
     }
 
     return response->is_error ? 1 : 0;

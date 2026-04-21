@@ -4482,13 +4482,17 @@ static bool openPlaytestLogFiles(Console* console)
     return true;
 }
 
+static bool ensurePlaytestCartInitialized(Console* console);
+
 static bool restartPlaytestCart(Console* console)
 {
-    bool ignoredError = false;
-    char* output = consoleRunCommandMcp(console, "run", &ignoredError);
+    bool runError = false;
+    char* output = consoleRunCommandMcp(console, "run", &runError);
     free(output);
 
-    return getStudioMode(console->studio) == TIC_RUN_MODE;
+    return !runError
+        && getStudioMode(console->studio) == TIC_RUN_MODE
+        && ensurePlaytestCartInitialized(console);
 }
 
 static bool playtestUsesLuaCart(Console* console)
@@ -4525,7 +4529,7 @@ static bool playtestEvalCart(Console* console, const char* expr, char* errorText
     return ok;
 }
 
-static bool ensurePlaytestCartInitialized(Console* console)
+static bool waitForRunRuntimeInitialized(Console* console, s32 maxFrames)
 {
     if(console == NULL || console->studio == NULL || console->tic == NULL)
         return false;
@@ -4538,9 +4542,21 @@ static bool ensurePlaytestCartInitialized(Console* console)
     if(core == NULL || core->state.initialized)
         return true;
 
-    studio_tick(console->studio, (tic80_input){0});
+    if(maxFrames < 1)
+        maxFrames = 1;
+
+    for(s32 i = 0; i < maxFrames
+        && getStudioMode(console->studio) == TIC_RUN_MODE
+        && !core->state.initialized
+        && !console->mcp.command.errorOccurred; i++)
+        studio_tick(console->studio, (tic80_input){0});
 
     return core->state.initialized;
+}
+
+static bool ensurePlaytestCartInitialized(Console* console)
+{
+    return waitForRunRuntimeInitialized(console, TIC80_FRAMERATE * 2);
 }
 
 static bool preparePlaytestArtifacts(Console* console, const char* script, bool inputOverlay)
@@ -4938,7 +4954,7 @@ static const char* normalizeRunCommandErrorKind(bool recognized, bool commandErr
     return commandErrorOccurred ? "command_error" : "none";
 }
 
-static void captureRunCommandMcpResult(const char* command, bool recognized, EditorMode modeBefore, EditorMode modeAfter, bool coreInitializedAfter, bool commandErrorOccurred, const char* text)
+static void captureRunCommandMcpResult(const char* command, bool recognized, EditorMode modeBefore, EditorMode modeAfter, bool coreInitializedAfter, bool runtimeWaited, bool runtimeReadyAfterWait, bool commandErrorOccurred, const char* text)
 {
     memset(&gRunCommandMcpResult, 0, sizeof gRunCommandMcpResult);
     snprintf(gRunCommandMcpResult.command, sizeof gRunCommandMcpResult.command, "%s", command ? command : "");
@@ -4946,6 +4962,8 @@ static void captureRunCommandMcpResult(const char* command, bool recognized, Edi
     gRunCommandMcpResult.modeBefore = modeBefore;
     gRunCommandMcpResult.modeAfter = modeAfter;
     gRunCommandMcpResult.coreInitializedAfter = coreInitializedAfter;
+    gRunCommandMcpResult.runtimeWaited = runtimeWaited;
+    gRunCommandMcpResult.runtimeReadyAfterWait = runtimeReadyAfterWait;
     snprintf(gRunCommandMcpResult.errorKind, sizeof gRunCommandMcpResult.errorKind, "%s",
         normalizeRunCommandErrorKind(recognized, commandErrorOccurred, text));
 }
@@ -4958,14 +4976,14 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
     if(command == NULL || *command == '\0')
     {
         EditorMode mode = getRunCommandMode(console);
-        captureRunCommandMcpResult(command, false, mode, mode, false, true, "empty command");
+        captureRunCommandMcpResult(command, false, mode, mode, false, false, false, true, "empty command");
         return strdup("empty command");
     }
 
     if(console == NULL || console->desc == NULL)
     {
         EditorMode mode = getRunCommandMode(console);
-        captureRunCommandMcpResult(command, false, mode, mode, false, true, "mcp console not initialized");
+        captureRunCommandMcpResult(command, false, mode, mode, false, false, false, true, "mcp console not initialized");
         return strdup("mcp console not initialized");
     }
 
@@ -4999,12 +5017,12 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 
         if(text == NULL)
         {
-            captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, true, "unknown command");
+            captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, false, false, true, "unknown command");
             return strdup("unknown command");
         }
 
         sprintf(text, "unknown command: %s", commandName);
-        captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, true, text);
+        captureRunCommandMcpResult(commandName, false, getStudioMode(console->studio), getStudioMode(console->studio), false, false, false, true, text);
         return text;
     }
 
@@ -5012,7 +5030,7 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 
     if(stream == NULL)
     {
-        captureRunCommandMcpResult(commandName, true, getStudioMode(console->studio), getStudioMode(console->studio), false, true, "failed to capture command output");
+        captureRunCommandMcpResult(commandName, true, getStudioMode(console->studio), getStudioMode(console->studio), false, false, false, true, "failed to capture command output");
         return strdup("failed to capture command output");
     }
 
@@ -5045,12 +5063,20 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
 
     processCommand(console, command);
 
+    bool runtimeWaited = false;
+    bool runtimeReadyAfterWait = core ? core->state.initialized : false;
+
     if(!console->mcp.command.errorOccurred
         && core
         && getStudioMode(console->studio) == TIC_RUN_MODE
-        && (strcmp(commandName, "run") == 0 || strcmp(commandName, "resume") == 0)
-        && !core->state.initialized)
-        studio_tick(console->studio, (tic80_input){0});
+        && (strcmp(commandName, "run") == 0 || strcmp(commandName, "resume") == 0))
+    {
+        runtimeWaited = !core->state.initialized;
+        runtimeReadyAfterWait = waitForRunRuntimeInitialized(console, TIC80_FRAMERATE * 2);
+
+        if(!runtimeReadyAfterWait && !console->mcp.command.errorOccurred)
+            printError(console, "\nruntime not initialized after waiting for run to start");
+    }
 
     fflush(stream);
     fseek(stream, 0, SEEK_END);
@@ -5105,6 +5131,8 @@ char* consoleRunCommandMcp(Console* console, const char* command, bool* isError)
         modeBefore,
         getStudioMode(console->studio),
         core ? core->state.initialized : false,
+        runtimeWaited,
+        runtimeReadyAfterWait,
         commandErrorOccurred,
         streamData);
 
