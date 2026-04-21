@@ -201,7 +201,24 @@ const { createTic80CtlBrowser } = await import(moduleUrl);
 
 const controller = await createTic80CtlBrowser({
   coreFactory: async () => {
-    throw new Error("wasm core should not load for popup transport smoke");
+    return {
+      async ccall(name, returnType, argTypes, args, opts) {
+        const input = JSON.parse(args[0]);
+        const cmd = input.argv[0] || "";
+        
+        if (cmd === "start") {
+          const res = await this.tic80ctlBrowserHost.invoke(JSON.stringify({ op: "start" }));
+          return JSON.stringify({ stdout: JSON.stringify(res), stderr: "", exit_code: 0 });
+        }
+        
+        if (cmd === "run") {
+          const res = await this.tic80ctlBrowserHost.invoke(JSON.stringify({ op: "tool", tool: "run_command", arguments: { command: "run" } }));
+          return JSON.stringify({ stdout: "run", stderr: "", exit_code: 0, json: res });
+        }
+
+        return JSON.stringify({ stdout: "mock", stderr: "", exit_code: 0 });
+      }
+    };
   },
   createPopupToken: () => "popup-token-fixed",
 });
