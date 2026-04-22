@@ -1,6 +1,7 @@
 export * from "../../../../../pi-mono/packages/tui/src/browser.js";
 export { SettingsList } from "../../../../../pi-mono/packages/tui/src/components/settings-list.js";
 
+import { fuzzyFilter } from "../../../../../pi-mono/packages/tui/src/fuzzy.js";
 import { Text } from "../../../../../pi-mono/packages/tui/src/browser.js";
 
 import type {
@@ -29,8 +30,43 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		private readonly fdPath: string | null = null,
 	) {}
 
-	async getSuggestions(): Promise<AutocompleteSuggestions | null> {
-		return null;
+	async getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		_options: { signal: AbortSignal; force?: boolean },
+	): Promise<AutocompleteSuggestions | null> {
+		const currentLine = lines[cursorLine] ?? "";
+		const textBeforeCursor = currentLine.slice(0, cursorCol).trimStart();
+		if (!textBeforeCursor.startsWith("/")) {
+			return null;
+		}
+
+		const spaceIndex = textBeforeCursor.indexOf(" ");
+		if (spaceIndex !== -1) {
+			return null;
+		}
+
+		const prefix = textBeforeCursor.slice(1);
+		const commandItems = this._commands.map((cmd) => ({
+			name: "name" in cmd ? cmd.name : cmd.value,
+			label: "name" in cmd ? cmd.name : cmd.label,
+			description: cmd.description,
+		}));
+		const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
+			value: item.name,
+			label: item.label,
+			...(item.description && { description: item.description }),
+		}));
+
+		if (filtered.length === 0) {
+			return null;
+		}
+
+		return {
+			items: filtered,
+			prefix: textBeforeCursor,
+		};
 	}
 
 	applyCompletion(
@@ -46,13 +82,19 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	} {
 		const line = lines[cursorLine] ?? "";
 		const start = Math.max(0, cursorCol - prefix.length);
-		const nextLine = `${line.slice(0, start)}${item.value}${line.slice(cursorCol)}`;
+		const beforePrefix = line.slice(0, start);
+		const afterCursor = line.slice(cursorCol);
+		const isSlashCommand = prefix.startsWith("/") && beforePrefix.trim() === "" && !prefix.slice(1).includes("/");
+
+		const nextLine = isSlashCommand
+			? `${beforePrefix}/${item.value} ${afterCursor}`
+			: `${beforePrefix}${item.value}${afterCursor}`;
 		const nextLines = [...lines];
 		nextLines[cursorLine] = nextLine;
 		return {
 			lines: nextLines,
 			cursorLine,
-			cursorCol: start + item.value.length,
+			cursorCol: isSlashCommand ? beforePrefix.length + item.value.length + 2 : start + item.value.length,
 		};
 	}
 
