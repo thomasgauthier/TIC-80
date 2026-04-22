@@ -1,0 +1,4 @@
+overrides:
+  '@mariozechner/pi-ai': link:../../../pi-mono/packages/ai
+  '@mariozechner/pi-coding-agent': link:../../../pi-mono/packages/coding-agent
+  '@mariozechner/pi-tui': link:../../../pi-mono/packages/tui

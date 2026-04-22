@@ -289,7 +289,7 @@ export function createBrowserTargetCoordinator(options = {}) {
     };
 }
 
-function createIframeTargetHost(options) {
+export function createIframeTargetHost(options) {
     const documentObject = options.documentObject;
     const iframeHost = options.iframeHost;
     const targetUrl = options.targetUrl || DEFAULT_TARGET_URL;
@@ -333,7 +333,7 @@ function createIframeTargetHost(options) {
     };
 }
 
-function createPopupTargetHost(options) {
+export function createPopupTargetHost(options) {
     const windowObject = options.windowObject;
     const targetUrl = options.targetUrl || DEFAULT_TARGET_URL;
     const parentOrigin = options.parentOrigin || "*";
@@ -395,7 +395,7 @@ function createPopupTargetHost(options) {
     };
 }
 
-function createLogWriter(logElement) {
+export function createLogWriter(logElement) {
     return function writeLog(message) {
         if (!logElement) {
             return;

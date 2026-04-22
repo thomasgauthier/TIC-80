@@ -1,0 +1,23 @@
+{
+  "name": "tic80-combined-browser-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "link:pi-mono": "pnpm link /workspace/pi-mono/packages/ai /workspace/pi-mono/packages/tui /workspace/pi-mono/packages/coding-agent",
+    "sync:tic80-runtime": "node ./scripts/sync-tic80-runtime.mjs",
+    "dev": "pnpm run link:pi-mono && pnpm run sync:tic80-runtime && vite --host 0.0.0.0",
+    "build": "pnpm run link:pi-mono && pnpm run sync:tic80-runtime && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "verify:dist": "node ./scripts/verify-dist.mjs",
+    "verify:preview": "node ./scripts/verify-preview.mjs"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.68.1",
+    "@mariozechner/pi-coding-agent": "0.68.1",
+    "@mariozechner/pi-tui": "0.68.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^8.0.9"
+  }
+}

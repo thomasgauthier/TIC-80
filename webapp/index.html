@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TIC-80 Browser Host + Pi TUI</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div>
+          <h1>TIC-80 browser host + Pi web TUI</h1>
+          <p>
+            Run owned iframe/popup TIC-80 sessions and keep a browser-hosted Pi terminal beside them.
+          </p>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel host-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Browser tic80ctl host</h2>
+              <p class="muted">Owned iframe/popup start behavior with status, run, stop, and command execution.</p>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button id="start-iframe">Start owned iframe session</button>
+            <button id="start-popup">Start owned popup session</button>
+            <button class="secondary" id="status-button">Status</button>
+            <button class="secondary" id="run-button">Run</button>
+            <button class="secondary" id="stop-button">Stop</button>
+          </div>
+
+          <div class="command-row">
+            <input
+              id="cmd-input"
+              type="text"
+              spellcheck="false"
+              placeholder='Command arguments (e.g. eval trace("hello"))'
+            />
+            <button class="secondary" id="cmd-button">Send command</button>
+          </div>
+
+          <div class="frame-shell">
+            <div class="frame-host" id="iframe-host"></div>
+          </div>
+
+          <div class="host-meta">
+            <section>
+              <h3>Session status</h3>
+              <pre id="status"></pre>
+            </section>
+            <section>
+              <h3>Host log</h3>
+              <textarea id="log" spellcheck="false" readonly></textarea>
+            </section>
+          </div>
+        </section>
+
+        <section class="panel pi-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Pi browser TUI</h2>
+              <p class="muted">Path A embed using the public Pi browser API. No TIC-80 tool bridge.</p>
+            </div>
+            <span id="pi-status" class="status-pill">Initializing…</span>
+          </div>
+
+          <div class="pi-config">
+            <label>
+              Provider
+              <select id="pi-provider">
+                <option value="mock" selected>mock</option>
+                <option value="openai">openai</option>
+                <option value="custom-openai">custom OpenAI-compatible</option>
+              </select>
+            </label>
+            <label>
+              Model
+              <input id="pi-model" spellcheck="false" />
+            </label>
+            <label>
+              Endpoint
+              <input id="pi-endpoint" spellcheck="false" />
+            </label>
+            <label>
+              API key
+              <input id="pi-api-key" type="password" spellcheck="false" autocomplete="off" />
+            </label>
+            <button id="pi-apply">Apply</button>
+          </div>
+
+          <div id="pi-terminal"></div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

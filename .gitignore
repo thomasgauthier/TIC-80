@@ -118,6 +118,9 @@ build/uwp/sdl-gpu-static/Debug/
 build/uwp/sdl-gpu-static/Debug Pro/
 build/uwp/sdl-gpu-static/Release/
 build/uwp/sdl-gpu-static/Release Pro/
+webapp/node_modules/
+webapp/dist/
+webapp/public/tic80-runtime/
 build/uwp/sdl-gpu-static/ARM/
 build/uwp/sdl-gpu-static/x64/
 build/uwp/tic/packages/
