@@ -155,6 +155,7 @@ export class BrowserWorkspace {
 	fs: IFileSystem;
 	private _persistEnabled = true;
 	private _customCommands: CustomCommand[] = [];
+	private _cwd = BROWSER_WORKSPACE_CWD;
 
 	private constructor(bash: Bash, fs?: IFileSystem) {
 		this.bash = bash;
@@ -179,6 +180,7 @@ export class BrowserWorkspace {
 		});
 		const workspace = new BrowserWorkspace(bash, effectiveFs);
 		workspace._customCommands = cmds;
+		workspace._cwd = BROWSER_WORKSPACE_CWD;
 		if (!fs && !shouldRestore) {
 			await workspace.persist();
 		}
@@ -193,19 +195,20 @@ export class BrowserWorkspace {
 	setFs(newFs: IFileSystem): void {
 		this.fs = newFs;
 		this._persistEnabled = newFs instanceof InMemoryFs;
+		this._cwd = this._persistEnabled ? BROWSER_WORKSPACE_CWD : "/";
 		this.bash = new Bash({
 			fs: newFs,
-			cwd: BROWSER_WORKSPACE_CWD,
+			cwd: this._cwd,
 			env: {
-				HOME: BROWSER_WORKSPACE_CWD,
-				PWD: BROWSER_WORKSPACE_CWD,
+				HOME: this._cwd,
+				PWD: this._cwd,
 			},
 			customCommands: this._customCommands,
 		});
 	}
 
 	resolvePath(path: string): string {
-		return this.fs.resolvePath(BROWSER_WORKSPACE_CWD, path);
+		return this.fs.resolvePath(this._cwd, path);
 	}
 
 	async readFile(path: string): Promise<string> {
@@ -250,7 +253,7 @@ export class BrowserWorkspace {
 
 		try {
 			const result = await this.bash.exec(command, {
-				cwd: BROWSER_WORKSPACE_CWD,
+				cwd: this._cwd,
 				signal: abortController.signal,
 				rawScript: true,
 			});

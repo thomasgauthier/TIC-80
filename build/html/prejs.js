@@ -44,7 +44,6 @@ Module.showAddPopup = function(callback)
 		var POPUP_PORT_PROTOCOL = "tic80ctl-popup-port-v1";
 
 		// --- Filesystem Tools (Emscripten Module.FS) ---
-		var FS_ROOT = "/com.nesbox.tic/TIC-80/";
 		var FS_WORK = "";
 
 		function getFS() {
@@ -54,7 +53,8 @@ Module.showAddPopup = function(callback)
 		}
 
 		function resolveFsPath(relative) {
-			var base = FS_WORK ? FS_WORK + "/" + relative : relative;
+			var text = String(relative || "");
+			var base = text.charAt(0) === "/" ? text : (FS_WORK ? FS_WORK + "/" + text : text);
 			var parts = base.split("/");
 			var resolved = [];
 			for (var i = 0; i < parts.length; i++) {
@@ -65,14 +65,11 @@ Module.showAddPopup = function(callback)
 					resolved.push(parts[i]);
 				}
 			}
-			return FS_ROOT + resolved.join("/");
+			return "/" + resolved.join("/");
 		}
 
 		function stripFsRoot(fullPath) {
-			if (fullPath.indexOf(FS_ROOT) === 0) {
-				var rel = fullPath.substring(FS_ROOT.length);
-				return rel || "/";
-			}
+			if (typeof fullPath !== "string" || fullPath.length === 0) return "/";
 			return fullPath;
 		}
 
