@@ -3,13 +3,13 @@
 This Vite app adds a new browser page that combines:
 
 - the existing owned TIC-80 iframe/popup startup flow
-- the public Pi Path A browser TUI
+- the full Pi browser `InteractiveMode` renderer adapted from the `pi-mono` `browser-tui` example
 
-The Pi panel is a plain browser TUI embed only. It does **not** expose TIC-80 tools through chat.
+The Pi panel now uses the same renderer family as the browser-tui example, including proper thinking/tool rendering. It still does **not** expose TIC-80 tools through chat.
 
 ## Local package linking
 
-This app is configured for local Path A development against `/workspace/pi-mono`.
+This app is configured for local full-browser-interactive development against `/workspace/pi-mono`.
 
 The build/dev scripts automatically run:
 
@@ -76,8 +76,9 @@ pnpm verify:preview
 ## Manual verification checklist
 
 1. Open the page.
-2. Confirm the Pi terminal renders on the right and shows the browser TUI startup message.
-3. With provider set to `mock`, submit a prompt and confirm the Pi panel responds.
-4. Click **Start owned iframe session** and confirm TIC-80 appears in the embedded frame.
-5. Click **Start owned popup session** and confirm TIC-80 opens in a popup.
-6. Use **Status**, **Run**, and **Stop** to confirm the host controls still work.
+2. Confirm the Pi terminal renders on the right with the full InteractiveMode startup UI.
+3. With provider set to `mock`, submit a prompt and confirm the Pi panel responds using the richer browser-tui-style renderer.
+4. Confirm thinking content renders like the browser-tui example rather than as literal `<thinking>` tags.
+5. Click **Start owned iframe session** and confirm TIC-80 appears in the embedded frame.
+6. Click **Start owned popup session** and confirm TIC-80 opens in a popup.
+7. Use **Status**, **Run**, and **Stop** to confirm the host controls still work.
