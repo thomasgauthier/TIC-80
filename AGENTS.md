@@ -11,6 +11,28 @@ bd update <id> --claim  # Claim work atomically
 bd close <id>         # Complete work
 ```
 
+## WEBAPP PATH DISTINCTION (MANDATORY, EASY TO GET WRONG)
+
+**`webapp/` and `build/webapp/` are NOT the same thing. Treat them as completely separate.**
+
+When the user says the **Vite app**, they mean:
+- `./webapp/`
+
+Do **NOT** silently substitute or conflate it with:
+- `./build/webapp/`
+
+### Hard rules
+
+- If the task is about the **Vite app**, work in **`./webapp/`**.
+- **Do not inspect, edit, sync from, or reason from `./build/webapp/`** unless the user explicitly asks for `build/webapp`.
+- **Do not say “webapp” when you actually mean `build/webapp`.** Always name the exact path.
+- If there is any ambiguity, stop and restate the path before making changes.
+
+### One-line mnemonic
+
+- **`./webapp/` = live Vite app we are fixing**
+- **`./build/webapp/` = different thing, irrelevant unless explicitly requested**
+
 ## Headless Build Rule (MANDATORY)
 
 **ALWAYS** run CMake exactly like [`we_build_it_for_headless.md`](we_build_it_for_headless.md).

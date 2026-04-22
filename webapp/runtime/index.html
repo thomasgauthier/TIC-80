@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TIC-80 tiny computer</title>
+    <style type="text/css">
+        body { margin: 0; padding: 0; }
+        .game { width: 100vw; height: 100vh; margin: 0; position: relative; background: #1a1c2c; }
+        canvas { width: 100%; height: 100%; margin: 0 auto; display: block; image-rendering: pixelated; }
+    </style>
+</head>
+<body>
+    <div class="game">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" onmousedown="window.focus()" tabindex="0"></canvas>
+    </div>
+
+    <script type="text/javascript">
+        const IFRAME_READY_PROTOCOL = "tic80ctl-iframe-ready-v1";
+        const canvasElement = document.getElementById("canvas");
+        let tic80RuntimeReady = false;
+        let tic80RuntimeError = "";
+        let tic80ScriptLoaded = false;
+
+        var Module = {
+            canvas: canvasElement,
+            onRuntimeInitialized() {
+                tic80RuntimeReady = true;
+                canvasElement.focus();
+            },
+            onAbort(reason) {
+                tic80RuntimeError = reason ? String(reason) : "TIC-80 aborted";
+            }
+        };
+
+        function loadTic80Runtime() {
+            if (tic80ScriptLoaded) {
+                return;
+            }
+            tic80ScriptLoaded = true;
+            const scriptTag = document.createElement("script");
+            scriptTag.src = "tic80.js";
+            scriptTag.onerror = () => {
+                tic80RuntimeError = "Failed to load tic80.js";
+            };
+            document.body.appendChild(scriptTag);
+        }
+
+        window.addEventListener("message", (event) => {
+            const data = event.data;
+            if (!data || typeof data !== "object") return;
+            if (data.tic80ctlBridge !== IFRAME_READY_PROTOCOL || data.type !== "ping" || !data.token) return;
+            if (!event.source || typeof event.source.postMessage !== "function") return;
+
+            if (tic80RuntimeReady) {
+                event.source.postMessage({
+                    tic80ctlBridge: IFRAME_READY_PROTOCOL,
+                    type: "ready",
+                    token: data.token,
+                }, event.origin || "*");
+                return;
+            }
+
+            if (tic80RuntimeError) {
+                event.source.postMessage({
+                    tic80ctlBridge: IFRAME_READY_PROTOCOL,
+                    type: "error",
+                    token: data.token,
+                    message: tic80RuntimeError,
+                }, event.origin || "*");
+            }
+        });
+
+        // Safari/WebKit-only: remap Arrow keys with location 3 (numpad) to location 0.
+        (function(){
+            const ua = navigator.userAgent || '';
+            const isWebKit = /AppleWebKit/i.test(ua);
+            if (!isWebKit) return;
+
+            const synthesizeArrowWithLocation0 = (orig) => {
+                try {
+                    const ev = new KeyboardEvent(orig.type, {
+                        key: orig.key,
+                        code: orig.code,
+                        location: 0,
+                        repeat: orig.repeat,
+                        ctrlKey: orig.ctrlKey,
+                        shiftKey: orig.shiftKey,
+                        altKey: orig.altKey,
+                        metaKey: orig.metaKey,
+                        bubbles: true,
+                        cancelable: true,
+                    });
+                    Object.defineProperty(ev, 'which', { get: () => orig.which });
+                    Object.defineProperty(ev, 'keyCode', { get: () => orig.keyCode });
+                    return ev;
+                } catch { return null; }
+            };
+
+            const remapArrowLocationCapture = (e) => {
+                const isArrow = (e.key && e.key.startsWith('Arrow')) || (e.code && e.code.startsWith('Arrow'));
+                if (!isArrow) return;
+                if (e.location === 3) {
+                    const syn = synthesizeArrowWithLocation0(e);
+                    if (syn) {
+                        e.stopImmediatePropagation();
+                        e.preventDefault();
+                        (e.target || canvasElement).dispatchEvent(syn);
+                    }
+                }
+            };
+
+            ['keydown','keyup'].forEach(t => document.addEventListener(t, remapArrowLocationCapture, true));
+        })();
+
+        // Prevent page scrolling while the game canvas is focused.
+        (function(){
+            const preventArrowDefault = (e) => {
+                const key = e.key || e.code;
+                const kc = e.keyCode || e.which;
+                const isArrow = (key && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(key)) || (kc >= 37 && kc <= 40);
+                if (isArrow && document.activeElement === canvasElement) e.preventDefault();
+            };
+            document.addEventListener('keydown', preventArrowDefault, { passive: false });
+            canvasElement.addEventListener('keydown', preventArrowDefault, { passive: false });
+        })();
+
+        loadTic80Runtime();
+    </script>
+</body>
+</html>

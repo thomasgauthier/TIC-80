@@ -6,6 +6,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const webappDir = path.resolve(scriptDir, "..");
 const repoDir = path.resolve(webappDir, "..");
 const destinationDir = path.join(webappDir, "public", "tic80-runtime");
+const appRuntimeIndexPath = path.join(webappDir, "runtime", "index.html");
 
 const candidateDirs = [
   process.env.TIC80_RUNTIME_DIR,
@@ -14,7 +15,6 @@ const candidateDirs = [
 ].filter(Boolean);
 
 const requiredFiles = [
-  "index.html",
   "tic80.js",
   "tic80.wasm",
   "tic80ctl-browser-core.js",
@@ -66,7 +66,6 @@ async function findFirstExistingFile(fileName) {
 }
 
 async function copyFiles(sourceDir) {
-  await fs.rm(destinationDir, { recursive: true, force: true });
   await fs.mkdir(destinationDir, { recursive: true });
 
   for (const file of requiredFiles) {
@@ -80,6 +79,8 @@ async function copyFiles(sourceDir) {
     }
     await fs.copyFile(sourcePath, path.join(destinationDir, file));
   }
+
+  await fs.copyFile(appRuntimeIndexPath, path.join(destinationDir, "index.html"));
 }
 
 const sourceDir = await findRuntimeSource();

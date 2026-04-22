@@ -1,5 +1,7 @@
 # TIC-80 combined browser host + Pi web TUI
 
+For the exact known-good build and serve flow, see [BUILD.md](./BUILD.md).
+
 This Vite app adds a new browser page that combines:
 
 - the existing owned TIC-80 iframe/popup startup flow
@@ -34,6 +36,17 @@ The sync script looks in this order:
 3. `../build/webapp`
 
 The scripts copy the runtime into `webapp/public/tic80-runtime/` before dev/build.
+
+Important: the Vite app owns its runtime page template at:
+- `webapp/runtime/index.html`
+
+The sync step copies that file into:
+- `webapp/public/tic80-runtime/index.html`
+
+So if the Vite app's iframe/runtime boot behavior needs adjustment, update:
+- `webapp/runtime/index.html`
+
+not a generated build directory.
 
 ## Install
 
