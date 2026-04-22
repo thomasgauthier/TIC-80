@@ -17,12 +17,13 @@ import { WebTerminal } from "@mariozechner/pi-tui/browser";
 
 import { AgentSession } from "../../../../pi-mono/packages/coding-agent/src/core/agent-session.js";
 import type { ModelRegistry } from "../../../../pi-mono/packages/coding-agent/src/core/model-registry.js";
-import type { ResourceLoader } from "../../../../pi-mono/packages/coding-agent/src/core/resource-loader.js";
 import { SessionManager } from "../../../../pi-mono/packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../../../pi-mono/packages/coding-agent/src/core/settings-manager.js";
 import { InteractiveMode } from "../../../../pi-mono/packages/coding-agent/src/modes/interactive/interactive-mode.js";
 
+import { createBrowserResourceLoader } from "./browser-resource-loader.js";
 import { BROWSER_WORKSPACE_CWD, BrowserWorkspace, createDefaultFs } from "./browser-workspace.js";
+import { installBundledTic80ctlSkill } from "./bundled-skill.js";
 import { McpFs } from "./mcp-fs.js";
 import { createTic80ctlCommand, type Tic80CtlRunner } from "./tic80ctl-commands.js";
 
@@ -75,22 +76,6 @@ type BrowserModelRegistry = {
   unregisterProvider(): void;
 };
 
-type BrowserResourceLoader = {
-  reload(): Promise<void>;
-  extendResources(): void;
-  getThemes(): { themes: never[]; diagnostics: never[] };
-  getPrompts(): { prompts: never[]; diagnostics: never[] };
-  getSkills(): { skills: never[]; diagnostics: never[] };
-  getExtensions(): {
-    extensions: never[];
-    errors: never[];
-    runtime: { pendingProviderRegistrations: never[]; flagValues: Map<string, boolean | string> };
-  };
-  getAgentsFiles(): { agentsFiles: never[] };
-  getSystemPrompt(): undefined;
-  getAppendSystemPrompt(): string[];
-};
-
 class BrowserRuntimeHost {
   constructor(readonly session: AgentSession) {}
 
@@ -140,36 +125,6 @@ const mockAuthStorage: BrowserAuthStorage = {
   logout() {},
   async login() {
     throw new Error("OAuth login is unavailable in the browser example");
-  },
-};
-
-const emptyResourceLoader: BrowserResourceLoader = {
-  async reload() {},
-  extendResources() {},
-  getThemes() {
-    return { themes: [], diagnostics: [] };
-  },
-  getPrompts() {
-    return { prompts: [], diagnostics: [] };
-  },
-  getSkills() {
-    return { skills: [], diagnostics: [] };
-  },
-  getExtensions() {
-    return {
-      extensions: [],
-      errors: [],
-      runtime: { pendingProviderRegistrations: [], flagValues: new Map<string, boolean | string>() },
-    };
-  },
-  getAgentsFiles() {
-    return { agentsFiles: [] };
-  },
-  getSystemPrompt() {
-    return undefined;
-  },
-  getAppendSystemPrompt() {
-    return [];
   },
 };
 
@@ -597,7 +552,8 @@ async function startAndBindFs(kind: "iframe" | "popup"): Promise<unknown> {
   }
   if (tic80Controller) {
     workspace.setFs(new McpFs(tic80Controller.callTool.bind(tic80Controller)));
-    writeHostLog(`Switched workspace to MCP-backed filesystem (TIC-80 ${kind}).`);
+    await installBundledTic80ctlSkill(workspace);
+    writeHostLog(`Switched workspace to MCP-backed filesystem (TIC-80 ${kind}) and reinstalled bundled skills.`);
   }
   return result;
 }
@@ -606,7 +562,8 @@ async function stopAndResetFs(): Promise<void> {
   await coordinator.stop();
   const fallback = createDefaultFs();
   workspace.setFs(fallback);
-  writeHostLog("Switched workspace back to in-memory fallback.");
+  await installBundledTic80ctlSkill(workspace);
+  writeHostLog("Switched workspace back to in-memory fallback and reinstalled bundled skills.");
 }
 
 const tic80ctlRunner: Tic80CtlRunner = {
@@ -799,8 +756,10 @@ async function main(): Promise<void> {
   await webTerminal.ready;
 
   workspace = await BrowserWorkspace.create(undefined, [tic80ctlCommand]);
+  await installBundledTic80ctlSkill(workspace);
   (window as Window & { __piBrowserWorkspace?: BrowserWorkspace }).__piBrowserWorkspace = workspace;
   const browserTools = createBrowserTools(workspace);
+  const resourceLoader = createBrowserResourceLoader();
 
   const settingsManager = SettingsManager.inMemory({
     quietStartup: false,
@@ -831,7 +790,7 @@ async function main(): Promise<void> {
     sessionManager,
     settingsManager,
     cwd: BROWSER_WORKSPACE_CWD,
-    resourceLoader: emptyResourceLoader as unknown as ResourceLoader,
+    resourceLoader,
     customTools: [],
     modelRegistry: browserModelRegistry as unknown as ModelRegistry,
     baseToolsOverride: browserTools,
