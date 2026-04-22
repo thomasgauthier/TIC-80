@@ -16,12 +16,21 @@ if(EMSCRIPTEN)
     add_executable(tic80ctl-browser-core ${TOOLS_DIR}/tic80ctl_browser.c)
     set_target_properties(tic80ctl-browser-core PROPERTIES
         OUTPUT_NAME "tic80ctl-browser-core"
-        LINK_FLAGS "-s WASM=1 -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=65536 -s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_tic80ctl_browser_run_from_json'] -s EXPORTED_RUNTIME_METHODS=['ccall']"
+        LINK_FLAGS "-s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=65536 -s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_tic80ctl_browser_run_from_json','_free'] -s EXPORTED_RUNTIME_METHODS=['ccall','UTF8ToString']"
     )
     configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser.js ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser.js COPYONLY)
     configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-host.mjs ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-host.mjs COPYONLY)
     configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-demo.html ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-demo.html COPYONLY)
     configure_file(${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-demo.html ${CMAKE_BINARY_DIR}/bin/tic80ctl-demo.html COPYONLY)
+
+    add_custom_command(TARGET tic80ctl-browser-core POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-core.js
+            ${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-core.js
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_BINARY_DIR}/bin/tic80ctl-browser-core.wasm
+            ${CMAKE_SOURCE_DIR}/build/webapp/tic80ctl-browser-core.wasm
+    )
 endif()
 
 if(BUILD_TOOLS)

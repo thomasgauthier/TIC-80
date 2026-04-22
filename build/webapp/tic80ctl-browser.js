@@ -664,14 +664,15 @@ function createCoreRunner(module, transport, options = {}) {
     module.tic80ctlBrowserHost = createHostBridge(transport, options);
 
     return async function run(argv) {
-        const raw = await module.ccall(
+        const ptr = await module.ccall(
             "tic80ctl_browser_run_from_json",
-            "string",
+            "number",
             ["string"],
             [JSON.stringify({ argv: Array.isArray(argv) ? argv : [] })],
             { async: true }
         );
-
+        const raw = ptr ? module.UTF8ToString(ptr) : "";
+        if (ptr && typeof module._free === "function") module._free(ptr);
         return normalizeResult(raw ? JSON.parse(raw) : {});
     };
 }
@@ -679,6 +680,7 @@ function createCoreRunner(module, transport, options = {}) {
 export async function createTic80CtlBrowser(options = {}) {
     const transport = createTransportController(options);
     let coreState = null;
+    let operationQueue = Promise.resolve();
 
     async function getCoreState() {
         if (coreState) {
@@ -694,29 +696,35 @@ export async function createTic80CtlBrowser(options = {}) {
         return coreState;
     }
 
+    function serialize(operation) {
+        const scheduled = operationQueue.catch(() => {}).then(operation);
+        operationQueue = scheduled.catch(() => {});
+        return scheduled;
+    }
+
     return {
-        bindTarget: transport.bindTarget,
-        bindIframe: transport.bindIframe,
-        openPopupTarget: transport.openPopupTarget,
-        initialize: transport.initialize,
-        request: transport.request,
-        callTool: async (name, argumentsObject = {}) => {
+        bindTarget: async (...args) => await serialize(() => transport.bindTarget(...args)),
+        bindIframe: async (...args) => await serialize(() => transport.bindIframe(...args)),
+        openPopupTarget: async (...args) => await serialize(() => transport.openPopupTarget(...args)),
+        initialize: async (...args) => await serialize(() => transport.initialize(...args)),
+        request: async (...args) => await serialize(() => transport.request(...args)),
+        callTool: async (name, argumentsObject = {}) => await serialize(async () => {
             const rawResponse = await transport.callTool(name, argumentsObject);
             return rawResponse && typeof rawResponse.result === "object"
                 ? rawResponse.result
                 : rawResponse;
-        },
-        run: async (argv) => {
+        }),
+        run: async (argv) => await serialize(async () => {
             const { runCore } = await getCoreState();
             return await runCore(argv);
-        },
+        }),
         status: transport.status,
-        stop: transport.stop,
-        dispose: async () => {
+        stop: async (...args) => await serialize(() => transport.stop(...args)),
+        dispose: async () => await serialize(async () => {
             if (coreState && coreState.module) {
                 delete coreState.module.tic80ctlBrowserHost;
             }
             await transport.dispose();
-        },
+        }),
     };
 }

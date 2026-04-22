@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { Bash, type IFileSystem, InMemoryFs } from "just-bash/browser";
+import { Bash, type CustomCommand, type IFileSystem, InMemoryFs } from "just-bash/browser";
 
 const WORKSPACE_STORAGE_KEY = "pi-browser-tui-workspace-v1";
 export const BROWSER_WORKSPACE_CWD = "/workspace";
@@ -51,7 +51,7 @@ function comparePaths(a: string, b: string): number {
 	return a.length - b.length || a.localeCompare(b);
 }
 
-function createDefaultFs(): InMemoryFs {
+export function createDefaultFs(): InMemoryFs {
 	const fs = new InMemoryFs();
 	fs.mkdirSync("/workspace", { recursive: true });
 	fs.writeFileSync(
@@ -151,33 +151,57 @@ function loadSnapshot(): WorkspaceSnapshot | null {
 }
 
 export class BrowserWorkspace {
-	readonly bash: Bash;
-	readonly fs: IFileSystem;
+	bash: Bash;
+	fs: IFileSystem;
+	private _persistEnabled = true;
+	private _customCommands: CustomCommand[] = [];
 
-	private constructor(bash: Bash) {
+	private constructor(bash: Bash, fs?: IFileSystem) {
 		this.bash = bash;
-		this.fs = bash.fs;
+		this.fs = fs ?? bash.fs;
 	}
 
-	static async create(): Promise<BrowserWorkspace> {
-		const fs = createDefaultFs();
-		const snapshot = loadSnapshot();
-		if (snapshot) {
-			await restoreFs(fs, snapshot);
+	static async create(fs?: IFileSystem, customCommands?: CustomCommand[]): Promise<BrowserWorkspace> {
+		const effectiveFs = fs ?? createDefaultFs();
+		const shouldRestore = !fs && loadSnapshot();
+		if (shouldRestore) {
+			await restoreFs(effectiveFs as InMemoryFs, shouldRestore);
 		}
+		const cmds = customCommands ?? [];
 		const bash = new Bash({
-			fs,
+			fs: effectiveFs,
 			cwd: BROWSER_WORKSPACE_CWD,
 			env: {
 				HOME: BROWSER_WORKSPACE_CWD,
 				PWD: BROWSER_WORKSPACE_CWD,
 			},
+			customCommands: cmds,
 		});
-		const workspace = new BrowserWorkspace(bash);
-		if (!snapshot) {
+		const workspace = new BrowserWorkspace(bash, effectiveFs);
+		workspace._customCommands = cmds;
+		if (!fs && !shouldRestore) {
 			await workspace.persist();
 		}
 		return workspace;
+	}
+
+	/**
+	 * Swap the backing filesystem at runtime.
+	 * Used to switch between InMemoryFs (cold start) and McpFs (TIC-80 live).
+	 * Re-creates the internal Bash instance so bash.exec() uses the new fs.
+	 */
+	setFs(newFs: IFileSystem): void {
+		this.fs = newFs;
+		this._persistEnabled = newFs instanceof InMemoryFs;
+		this.bash = new Bash({
+			fs: newFs,
+			cwd: BROWSER_WORKSPACE_CWD,
+			env: {
+				HOME: BROWSER_WORKSPACE_CWD,
+				PWD: BROWSER_WORKSPACE_CWD,
+			},
+			customCommands: this._customCommands,
+		});
 	}
 
 	resolvePath(path: string): string {
@@ -195,12 +219,12 @@ export class BrowserWorkspace {
 	async writeFile(path: string, content: string): Promise<void> {
 		const absolutePath = this.resolvePath(path);
 		await this.fs.writeFile(absolutePath, content);
-		await this.persist();
+		if (this._persistEnabled) await this.persist();
 	}
 
 	async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
 		await this.fs.mkdir(this.resolvePath(path), options);
-		await this.persist();
+		if (this._persistEnabled) await this.persist();
 	}
 
 	async exists(path: string): Promise<boolean> {
@@ -230,7 +254,7 @@ export class BrowserWorkspace {
 				signal: abortController.signal,
 				rawScript: true,
 			});
-			await this.persist();
+			if (this._persistEnabled) await this.persist();
 			return {
 				stdout: result.stdout,
 				stderr: result.stderr,
@@ -247,6 +271,9 @@ export class BrowserWorkspace {
 	}
 
 	async persist(): Promise<void> {
+		if (!this._persistEnabled) return;
+		const paths = this.fs.getAllPaths();
+		if (paths.length === 0) return;
 		const snapshot = await serializeFs(this.fs);
 		window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(snapshot));
 	}

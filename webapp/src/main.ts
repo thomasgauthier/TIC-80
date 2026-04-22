@@ -22,7 +22,9 @@ import { SessionManager } from "../../../../pi-mono/packages/coding-agent/src/co
 import { SettingsManager } from "../../../../pi-mono/packages/coding-agent/src/core/settings-manager.js";
 import { InteractiveMode } from "../../../../pi-mono/packages/coding-agent/src/modes/interactive/interactive-mode.js";
 
-import { BROWSER_WORKSPACE_CWD, BrowserWorkspace } from "./browser-workspace.js";
+import { BROWSER_WORKSPACE_CWD, BrowserWorkspace, createDefaultFs } from "./browser-workspace.js";
+import { McpFs } from "./mcp-fs.js";
+import { createTic80ctlCommand, type Tic80CtlRunner } from "./tic80ctl-commands.js";
 
 import {
   createBrowserTargetCoordinator,
@@ -539,11 +541,14 @@ function setPiStatus(text: string): void {
 }
 
 const targetUrl = runtimeUrl("index.html");
+let tic80Controller: Awaited<ReturnType<typeof createTic80CtlBrowser>> | null = null;
 const coordinator = createBrowserTargetCoordinator({
-  controllerFactory: async () =>
-    createTic80CtlBrowser({
+  controllerFactory: async () => {
+    tic80Controller = await createTic80CtlBrowser({
       coreModulePath: runtimeUrl("tic80ctl-browser-core.js"),
-    }),
+    });
+    return tic80Controller;
+  },
   openIframeTarget: createIframeTargetHost({
     documentObject: document,
     iframeHost,
@@ -568,6 +573,8 @@ const coordinator = createBrowserTargetCoordinator({
   log: writeHostLog,
 });
 
+let workspace: BrowserWorkspace;
+
 async function refreshHostStatus(): Promise<void> {
   hostStatus.textContent = JSON.stringify(await coordinator.status(), null, 2);
 }
@@ -582,12 +589,52 @@ async function runHostAction(label: string, callback: () => Promise<unknown>): P
   await refreshHostStatus();
 }
 
+async function startAndBindFs(kind: "iframe" | "popup"): Promise<unknown> {
+  const result = await coordinator.start(kind);
+  if (result && (result as { exitCode?: number }).exitCode !== 0) {
+    writeHostLog(`Start failed (exit=${(result as { exitCode?: number }).exitCode}). Keeping in-memory filesystem.`);
+    return result;
+  }
+  if (tic80Controller) {
+    workspace.setFs(new McpFs(tic80Controller.callTool.bind(tic80Controller)));
+    writeHostLog(`Switched workspace to MCP-backed filesystem (TIC-80 ${kind}).`);
+  }
+  return result;
+}
+
+async function stopAndResetFs(): Promise<void> {
+  await coordinator.stop();
+  const fallback = createDefaultFs();
+  workspace.setFs(fallback);
+  writeHostLog("Switched workspace back to in-memory fallback.");
+}
+
+const tic80ctlRunner: Tic80CtlRunner = {
+  runCommand(argv: string[]) {
+    return coordinator.runCommand(argv);
+  },
+  status() {
+    return coordinator.status();
+  },
+  async startAndBind(kind: "iframe" | "popup") {
+    const result = await startAndBindFs(kind);
+    await refreshHostStatus();
+    return result;
+  },
+  async stopAndReset() {
+    await stopAndResetFs();
+    await refreshHostStatus();
+  },
+};
+
+const tic80ctlCommand = createTic80ctlCommand(tic80ctlRunner);
+
 startIframeButton.addEventListener("click", () => {
-  void runHostAction("start iframe", () => coordinator.start("iframe"));
+  void runHostAction("start iframe", () => startAndBindFs("iframe"));
 });
 
 startPopupButton.addEventListener("click", () => {
-  void runHostAction("start popup", () => coordinator.start("popup"));
+  void runHostAction("start popup", () => startAndBindFs("popup"));
 });
 
 statusButton.addEventListener("click", () => {
@@ -599,7 +646,7 @@ runButton.addEventListener("click", () => {
 });
 
 stopButton.addEventListener("click", () => {
-  void runHostAction("stop", () => coordinator.stop());
+  void runHostAction("stop", () => stopAndResetFs());
 });
 
 cmdButton.addEventListener("click", () => {
@@ -751,7 +798,7 @@ async function main(): Promise<void> {
   setPiStatus("Initializing InteractiveMode...");
   await webTerminal.ready;
 
-  const workspace = await BrowserWorkspace.create();
+  workspace = await BrowserWorkspace.create(undefined, [tic80ctlCommand]);
   (window as Window & { __piBrowserWorkspace?: BrowserWorkspace }).__piBrowserWorkspace = workspace;
   const browserTools = createBrowserTools(workspace);
 

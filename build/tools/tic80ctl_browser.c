@@ -2589,5 +2589,5 @@ done:
     sb_append(&ResultBuffer, ",\"stderr\":");
     sb_append_json_string(&ResultBuffer, StderrBuffer.data ? StderrBuffer.data : "");
     sb_appendf(&ResultBuffer, ",\"exit_code\":%d}", exit_code);
-    return ResultBuffer.data ? ResultBuffer.data : "{\"stdout\":\"\",\"stderr\":\"tic80ctl: internal error\",\"exit_code\":1}";
+    return ResultBuffer.data ? strdup(ResultBuffer.data) : strdup("{\"stdout\":\"\",\"stderr\":\"tic80ctl: internal error\",\"exit_code\":1}");
 }

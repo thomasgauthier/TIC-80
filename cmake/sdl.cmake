@@ -206,6 +206,15 @@ if(BUILD_SDL)
             set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -s ASSERTIONS=1")
         endif()
 
+        add_custom_command(TARGET ${TIC80_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_BINARY_DIR}/bin/tic80.js
+                ${CMAKE_SOURCE_DIR}/build/webapp/tic80.js
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_BINARY_DIR}/bin/tic80.wasm
+                ${CMAKE_SOURCE_DIR}/build/webapp/tic80.wasm
+        )
+
     elseif(NOT ANDROID)
         target_link_libraries(${TIC80_TARGET} SDL2main)
     endif()

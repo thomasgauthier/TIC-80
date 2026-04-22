@@ -1,6 +1,7 @@
 const DEFAULT_TARGET_URL = "./index.html";
 const POPUP_TOKEN_PARAM = "tic80ctl_popup_token";
 const POPUP_ORIGIN_PARAM = "tic80ctl_popup_origin";
+const IFRAME_READY_PROTOCOL = "tic80ctl-iframe-ready-v1";
 
 function noop() {}
 
@@ -294,9 +295,10 @@ export function createIframeTargetHost(options) {
     const iframeHost = options.iframeHost;
     const targetUrl = options.targetUrl || DEFAULT_TARGET_URL;
     const parentOrigin = options.parentOrigin || "*";
+    const windowObject = documentObject && documentObject.defaultView;
 
     return async function openIframeTarget() {
-        if (!documentObject || !iframeHost) {
+        if (!documentObject || !iframeHost || !windowObject) {
             throw new Error("Iframe host container is unavailable.");
         }
 
@@ -323,11 +325,86 @@ export function createIframeTargetHost(options) {
             );
         });
 
+        const origin = inferOrigin(targetUrl, parentOrigin);
+        const token = createPopupToken(windowObject);
+
+        await new Promise((resolve, reject) => {
+            let settled = false;
+            let timerId = 0;
+            let timeoutId = 0;
+
+            function cleanup() {
+                if (timerId) {
+                    windowObject.clearInterval(timerId);
+                }
+                if (timeoutId) {
+                    windowObject.clearTimeout(timeoutId);
+                }
+                windowObject.removeEventListener("message", onMessage);
+            }
+
+            function finish(error) {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                cleanup();
+                if (error) {
+                    reject(error);
+                    return;
+                }
+                resolve();
+            }
+
+            function onMessage(event) {
+                const data = event && event.data;
+                if (event.source !== iframe.contentWindow) {
+                    return;
+                }
+                if (origin !== "*" && event.origin !== origin) {
+                    return;
+                }
+                if (!data || typeof data !== "object" || data.tic80ctlBridge !== IFRAME_READY_PROTOCOL || data.token !== token) {
+                    return;
+                }
+                if (data.type === "ready") {
+                    finish();
+                    return;
+                }
+                if (data.type === "error") {
+                    finish(new Error(data.message || "Iframe target failed to initialize."));
+                }
+            }
+
+            function ping() {
+                if (!iframe.isConnected || !iframe.contentWindow) {
+                    finish(new Error("Iframe target was removed before TIC-80 became ready."));
+                    return;
+                }
+                try {
+                    iframe.contentWindow.postMessage({
+                        tic80ctlBridge: IFRAME_READY_PROTOCOL,
+                        type: "ping",
+                        token,
+                    }, origin);
+                } catch (_error) {
+                    // Keep polling until the iframe is ready or the timeout expires.
+                }
+            }
+
+            windowObject.addEventListener("message", onMessage);
+            timerId = windowObject.setInterval(ping, 100);
+            timeoutId = windowObject.setTimeout(() => {
+                finish(new Error("Timed out waiting for iframe target to become ready."));
+            }, 15000);
+            ping();
+        });
+
         return {
             kind: "iframe",
             owned: true,
             windowHandle: iframe.contentWindow,
-            origin: inferOrigin(targetUrl, parentOrigin),
+            origin,
             iframe,
         };
     };

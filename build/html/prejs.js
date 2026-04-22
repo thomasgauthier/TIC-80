@@ -43,6 +43,315 @@ Module.showAddPopup = function(callback)
 		var MAX_REQUEST_BYTES = 8192;
 		var POPUP_PORT_PROTOCOL = "tic80ctl-popup-port-v1";
 
+		// --- Filesystem Tools (Emscripten Module.FS) ---
+		var FS_ROOT = "/com.nesbox.tic/TIC-80/";
+		var FS_WORK = "";
+
+		function getFS() {
+			return (typeof FS !== "undefined") ? FS
+				: (typeof Module !== "undefined" && Module.FS) ? Module.FS
+				: null;
+		}
+
+		function resolveFsPath(relative) {
+			var base = FS_WORK ? FS_WORK + "/" + relative : relative;
+			var parts = base.split("/");
+			var resolved = [];
+			for (var i = 0; i < parts.length; i++) {
+				if (parts[i] === "" || parts[i] === ".") continue;
+				if (parts[i] === "..") {
+					if (resolved.length > 0) resolved.pop();
+				} else {
+					resolved.push(parts[i]);
+				}
+			}
+			return FS_ROOT + resolved.join("/");
+		}
+
+		function stripFsRoot(fullPath) {
+			if (fullPath.indexOf(FS_ROOT) === 0) {
+				var rel = fullPath.substring(FS_ROOT.length);
+				return rel || "/";
+			}
+			return fullPath;
+		}
+
+		function syncFs() {
+			if (typeof Module !== "undefined" && Module.syncFSRequests !== undefined)
+				Module.syncFSRequests++;
+		}
+
+		function b64Encode(uint8arr) {
+			var bin = "";
+			for (var i = 0; i < uint8arr.length; i++)
+				bin += String.fromCharCode(uint8arr[i]);
+			return btoa(bin);
+		}
+
+		function b64Decode(b64) {
+			var bin = atob(b64);
+			var arr = new Uint8Array(bin.length);
+			for (var i = 0; i < bin.length; i++)
+				arr[i] = bin.charCodeAt(i);
+			return arr;
+		}
+
+		function rmTree(FS, path) {
+			var entries = FS.readdir(path);
+			for (var i = 0; i < entries.length; i++) {
+				if (entries[i] === "." || entries[i] === "..") continue;
+				var child = path + "/" + entries[i];
+				var st = FS.lstat(child);
+				if (FS.isDir(st.mode))
+					rmTree(FS, child);
+				else
+					FS.unlink(child);
+			}
+			FS.rmdir(path);
+		}
+
+		function collectPaths(FS, dirPath, result, maxDepth, currentDepth) {
+			if (maxDepth > 0 && currentDepth > maxDepth) return;
+			var entries;
+			try { entries = FS.readdir(dirPath); } catch(e) { return; }
+			for (var i = 0; i < entries.length; i++) {
+				if (entries[i] === "." || entries[i] === "..") continue;
+				var child = dirPath + "/" + entries[i];
+				var type = "unknown";
+				try {
+					var st = FS.lstat(child);
+					if (FS.isDir(st.mode)) type = "directory";
+					else if (FS.isFile(st.mode)) type = "file";
+					else if (FS.isLink(st.mode)) type = "symlink";
+				} catch(e) {}
+				result.push({ path: stripFsRoot(child), type: type });
+				if (type === "directory")
+					collectPaths(FS, child, result, maxDepth, currentDepth + 1);
+			}
+		}
+
+		function statObject(FS, resolved, st) {
+			var type = "unknown";
+			if (FS.isDir(st.mode)) type = "directory";
+			else if (FS.isFile(st.mode)) type = "file";
+			else if (FS.isLink(st.mode)) type = "symlink";
+			return {
+				path: stripFsRoot(resolved),
+				type: type,
+				size: st.size,
+				mode: st.mode,
+				mtime: st.mtime ? st.mtime.getTime() : null
+			};
+		}
+
+		var fsToolDefinitions = [
+			{"name":"fs_read_file","description":"Read a file from the TIC-80 virtual filesystem. Returns text by default, or base64-encoded binary when encoding=base64.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"encoding":{"type":"string","enum":["utf-8","base64"]}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_write_file","description":"Write a file to the TIC-80 virtual filesystem. Content is text by default, or base64-decoded binary when encoding=base64.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"encoding":{"type":"string","enum":["utf-8","base64"]}},"required":["path","content"],"additionalProperties":false}},
+			{"name":"fs_append_file","description":"Append content to a file in the TIC-80 virtual filesystem.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"encoding":{"type":"string","enum":["utf-8","base64"]}},"required":["path","content"],"additionalProperties":false}},
+			{"name":"fs_exists","description":"Check if a path exists in the TIC-80 virtual filesystem.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_stat","description":"Get file/directory metadata (follows symlinks). Returns size, mode, mtime, type.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_lstat","description":"Get file/directory metadata without following symlinks.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_mkdir","description":"Create a directory. Uses mkdirTree (recursive) by default; set recursive=false for single-level only.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_readdir","description":"List entries in a directory. Returns array of entry names.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":[],"additionalProperties":false}},
+			{"name":"fs_readdir_with_filetypes","description":"List entries in a directory with type information (file, directory, symlink).","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":[],"additionalProperties":false}},
+			{"name":"fs_rm","description":"Remove a file or directory. Use recursive=true for non-empty directories.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"},"force":{"type":"boolean"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_cp","description":"Copy a file within the TIC-80 virtual filesystem.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"],"additionalProperties":false}},
+			{"name":"fs_mv","description":"Move/rename a file or directory.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"],"additionalProperties":false}},
+			{"name":"fs_chmod","description":"Change file/directory permissions.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"mode":{"type":"integer"}},"required":["path","mode"],"additionalProperties":false}},
+			{"name":"fs_symlink","description":"Create a symbolic link.","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"linkpath":{"type":"string"}},"required":["target","linkpath"],"additionalProperties":false}},
+			{"name":"fs_readlink","description":"Read the target of a symbolic link.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_realpath","description":"Resolve a path to its canonical absolute form within the TIC-80 virtual filesystem.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_resolve_path","description":"Resolve a relative path against the TIC-80 working directory without touching the filesystem. Returns the scoped absolute path.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+			{"name":"fs_get_all_paths","description":"Recursively enumerate all file and directory paths under a given root.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"depth":{"type":"integer"}},"required":[],"additionalProperties":false}}
+		];
+
+		function getFsToolDefinitions() { return fsToolDefinitions; }
+
+		function isFsTool(name) {
+			return typeof name === "string" && name.indexOf("fs_") === 0;
+		}
+
+		function handleFsTool(toolName, args) {
+			var FS = getFS();
+			if (!FS) return { content: [{type:"text",text:"Filesystem not available (Module.FS not ready)"}], isError: true };
+
+			try {
+				switch (toolName) {
+				case "fs_read_file": {
+					var resolved = resolveFsPath(args.path);
+					var encoding = args.encoding || "utf-8";
+					var data = FS.readFile(resolved);
+					if (encoding === "base64") {
+						return { content: [{type:"text",text:b64Encode(data)}], isError: false };
+					}
+					var txt = "";
+					for (var i = 0; i < data.length; i++) txt += String.fromCharCode(data[i]);
+					try { txt = decodeURIComponent(escape(txt)); } catch(e) {}
+					return { content: [{type:"text",text:txt}], isError: false };
+				}
+				case "fs_write_file": {
+					var resolved = resolveFsPath(args.path);
+					var encoding = args.encoding || "utf-8";
+					var data = (encoding === "base64") ? b64Decode(args.content) : args.content;
+					FS.writeFile(resolved, data);
+					syncFs();
+					return { content: [{type:"text",text:"OK: wrote " + stripFsRoot(resolved)}], isError: false };
+				}
+				case "fs_append_file": {
+					var resolved = resolveFsPath(args.path);
+					var encoding = args.encoding || "utf-8";
+					var data = (encoding === "base64") ? b64Decode(args.content) : args.content;
+					FS.appendFile(resolved, data);
+					syncFs();
+					return { content: [{type:"text",text:"OK: appended to " + stripFsRoot(resolved)}], isError: false };
+				}
+				case "fs_exists": {
+					var resolved = resolveFsPath(args.path);
+					try { FS.stat(resolved); return { content: [{type:"text",text:"true"}], isError: false }; }
+					catch(e) { return { content: [{type:"text",text:"false"}], isError: false }; }
+				}
+				case "fs_stat": {
+					var resolved = resolveFsPath(args.path);
+					var st = FS.stat(resolved);
+					return { content: [{type:"text",text:JSON.stringify(statObject(FS, resolved, st))}], isError: false };
+				}
+				case "fs_lstat": {
+					var resolved = resolveFsPath(args.path);
+					var st = FS.lstat(resolved);
+					return { content: [{type:"text",text:JSON.stringify(statObject(FS, resolved, st))}], isError: false };
+				}
+				case "fs_mkdir": {
+					var resolved = resolveFsPath(args.path);
+					var recursive = args.recursive !== false;
+					if (recursive) FS.mkdirTree(resolved); else FS.mkdir(resolved);
+					syncFs();
+					return { content: [{type:"text",text:"OK: created directory " + stripFsRoot(resolved)}], isError: false };
+				}
+				case "fs_readdir": {
+					var dirPath = args.path || ".";
+					var resolved = resolveFsPath(dirPath);
+					var entries = FS.readdir(resolved);
+					var filtered = [];
+					for (var i = 0; i < entries.length; i++)
+						if (entries[i] !== "." && entries[i] !== "..") filtered.push(entries[i]);
+					return { content: [{type:"text",text:JSON.stringify(filtered)}], isError: false };
+				}
+				case "fs_readdir_with_filetypes": {
+					var dirPath = args.path || ".";
+					var resolved = resolveFsPath(dirPath);
+					var entries = FS.readdir(resolved);
+					var result = [];
+					for (var i = 0; i < entries.length; i++) {
+						if (entries[i] === "." || entries[i] === "..") continue;
+						var childPath = resolved + "/" + entries[i];
+						var type = "unknown";
+						try {
+							var lst = FS.lstat(childPath);
+							if (FS.isDir(lst.mode)) type = "directory";
+							else if (FS.isFile(lst.mode)) type = "file";
+							else if (FS.isLink(lst.mode)) type = "symlink";
+						} catch(e) {}
+						result.push({name:entries[i],type:type});
+					}
+					return { content: [{type:"text",text:JSON.stringify(result)}], isError: false };
+				}
+				case "fs_rm": {
+					var resolved = resolveFsPath(args.path);
+					var recursive = !!args.recursive;
+					var force = !!args.force;
+					try {
+						var st = FS.lstat(resolved);
+						if (FS.isDir(st.mode)) {
+							if (recursive) rmTree(FS, resolved); else FS.rmdir(resolved);
+						} else { FS.unlink(resolved); }
+						syncFs();
+						return { content: [{type:"text",text:"OK: removed " + stripFsRoot(resolved)}], isError: false };
+					} catch(e) {
+						if (force) return { content: [{type:"text",text:"OK: nothing to remove"}], isError: false };
+						return { content: [{type:"text",text:"Error: " + e.message}], isError: true };
+					}
+				}
+				case "fs_cp": {
+					var srcResolved = resolveFsPath(args.source);
+					var dstResolved = resolveFsPath(args.destination);
+					var data = FS.readFile(srcResolved);
+					FS.writeFile(dstResolved, data);
+					syncFs();
+					return { content: [{type:"text",text:"OK: copied " + stripFsRoot(srcResolved) + " to " + stripFsRoot(dstResolved)}], isError: false };
+				}
+				case "fs_mv": {
+					var srcResolved = resolveFsPath(args.source);
+					var dstResolved = resolveFsPath(args.destination);
+					FS.rename(srcResolved, dstResolved);
+					syncFs();
+					return { content: [{type:"text",text:"OK: moved " + stripFsRoot(srcResolved) + " to " + stripFsRoot(dstResolved)}], isError: false };
+				}
+				case "fs_chmod": {
+					var resolved = resolveFsPath(args.path);
+					FS.chmod(resolved, args.mode);
+					syncFs();
+					return { content: [{type:"text",text:"OK: chmod " + stripFsRoot(resolved) + " to " + args.mode}], isError: false };
+				}
+				case "fs_symlink": {
+					var target = resolveFsPath(args.target);
+					var linkpath = resolveFsPath(args.linkpath);
+					FS.symlink(target, linkpath);
+					syncFs();
+					return { content: [{type:"text",text:"OK: symlink " + stripFsRoot(linkpath) + " -> " + stripFsRoot(target)}], isError: false };
+				}
+				case "fs_readlink": {
+					var resolved = resolveFsPath(args.path);
+					var target = FS.readlink(resolved);
+					return { content: [{type:"text",text:stripFsRoot(target)}], isError: false };
+				}
+				case "fs_realpath": {
+					var resolved = resolveFsPath(args.path);
+					var lookup = FS.lookupPath(resolved);
+					return { content: [{type:"text",text:stripFsRoot(lookup.path)}], isError: false };
+				}
+				case "fs_resolve_path": {
+					var resolved = resolveFsPath(args.path);
+					return { content: [{type:"text",text:stripFsRoot(resolved)}], isError: false };
+				}
+				case "fs_get_all_paths": {
+					var basePath = args.path || ".";
+					var maxDepth = args.depth || 0;
+					var resolved = resolveFsPath(basePath);
+					var allPaths = [];
+					collectPaths(FS, resolved, allPaths, maxDepth, 0);
+					return { content: [{type:"text",text:JSON.stringify(allPaths)}], isError: false };
+				}
+				default:
+					return null;
+				}
+			} catch(e) {
+				return { content: [{type:"text",text:"Error: " + (e.message || String(e))}], isError: true };
+			}
+		}
+
+		function tryInterceptFsMessage(data) {
+			if (!isJsonRpcObject(data)) return false;
+			if (data.method !== "tools/call") return false;
+			var params = data.params;
+			if (!params || typeof params !== "object") return false;
+			var toolName = params.name;
+			if (!isFsTool(toolName)) return false;
+			if (data.id === undefined) return false;
+
+			var args = params.arguments || {};
+			var result = handleFsTool(toolName, args);
+			if (result === null) return false;
+
+			var response = { jsonrpc: "2.0", id: data.id, result: result };
+
+			if (controllerPort)
+				controllerPort.postMessage(response);
+			else if (controllerWindow)
+				controllerWindow.postMessage(response, controllerOrigin);
+
+			return true;
+		}
+
 		function readPopupHandshakeConfig() {
 			if(!root || !root.location || typeof URLSearchParams === "undefined")
 				return { token: "", origin: "" };
@@ -233,6 +542,9 @@ Module.showAddPopup = function(callback)
 			clearBindingIfClosed();
 			if(!bindWindowController(event)) return;
 
+			if(tryInterceptFsMessage(event.data))
+				return;
+
 			var serialized;
 
 			try
@@ -251,6 +563,9 @@ Module.showAddPopup = function(callback)
 
 		function enqueueFromPort(event) {
 			if(!controllerPort || !isJsonRpcObject(event.data)) return;
+
+			if(tryInterceptFsMessage(event.data))
+				return;
 
 			var serialized;
 
@@ -318,6 +633,13 @@ Module.showAddPopup = function(callback)
 			}
 
 			if(!isJsonRpcObject(message)) return 0;
+
+			if(message.result && Array.isArray(message.result.tools))
+			{
+				var fsDefs = getFsToolDefinitions();
+				for(var i = 0; i < fsDefs.length; i++)
+					message.result.tools.push(fsDefs[i]);
+			}
 
 			if(controllerPort)
 				controllerPort.postMessage(message);
