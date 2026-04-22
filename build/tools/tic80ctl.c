@@ -369,6 +369,17 @@ static bool sb_append(StringBuilder* sb, const char* text)
     return sb_append_n(sb, text, strlen(text));
 }
 
+static bool sb_append_joined_args(StringBuilder* sb, int argc, char** argv)
+{
+    for(int i = 0; i < argc; i++)
+    {
+        if(i > 0 && !sb_append(sb, " ")) return false;
+        if(!sb_append(sb, argv[i])) return false;
+    }
+
+    return true;
+}
+
 static bool sb_appendf(StringBuilder* sb, const char* fmt, ...)
 {
     va_list args;
@@ -4356,7 +4367,13 @@ int main(int argc, char** argv)
             fprintf(stderr, "tic80ctl: cmd requires a TIC-80 command string\n");
             return 1;
         }
-        return run_command_request(&paths, argv[0], "run_command", json_output);
+
+        StringBuilder command;
+        sb_init(&command);
+        sb_append_joined_args(&command, argc, argv);
+        int rc = run_command_request(&paths, command.data, "run_command", json_output);
+        sb_free(&command);
+        return rc;
     }
 
     if(strcmp(subcommand, "lint-cart") == 0)
@@ -4396,7 +4413,7 @@ int main(int argc, char** argv)
         StringBuilder command;
         sb_init(&command);
         sb_append(&command, "eval ");
-        sb_append(&command, argv[0]);
+        sb_append_joined_args(&command, argc, argv);
         int rc = run_command_request(&paths, command.data, "run_command", json_output);
         sb_free(&command);
         return rc;
