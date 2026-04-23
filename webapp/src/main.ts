@@ -22,7 +22,8 @@ import { SettingsManager } from "../../../../pi-mono/packages/coding-agent/src/c
 import { InteractiveMode } from "../../../../pi-mono/packages/coding-agent/src/modes/interactive/interactive-mode.js";
 
 import { createBrowserResourceLoader } from "./browser-resource-loader.js";
-import { BROWSER_WORKSPACE_CWD, BrowserWorkspace, createDefaultFs } from "./browser-workspace.js";
+import { BROWSER_WORKSPACE_CWD, BrowserWorkspace } from "./browser-workspace.js";
+import { installBundledTic80LintExtension } from "./bundled-extension.js";
 import { installBundledTic80ctlSkill } from "./bundled-skill.js";
 import { McpFs } from "./mcp-fs.js";
 import { createTic80ctlCommand, type Tic80CtlRunner } from "./tic80ctl-commands.js";
@@ -477,7 +478,10 @@ const stopButton = requireElement("stop-button", HTMLButtonElement);
 const cmdInput = requireElement("cmd-input", HTMLInputElement);
 const cmdButton = requireElement("cmd-button", HTMLButtonElement);
 
+const piPanel = requireElement("pi-panel", HTMLElement);
 const piTerminalElement = requireElement("pi-terminal", HTMLElement);
+const piLockOverlay = requireElement("pi-lock-overlay", HTMLElement);
+const piLockMessage = requireElement("pi-lock-message", HTMLElement);
 const piProviderSelect = requireElement("pi-provider", HTMLSelectElement);
 const piModelInput = requireElement("pi-model", HTMLInputElement);
 const piEndpointInput = requireElement("pi-endpoint", HTMLInputElement);
@@ -493,6 +497,19 @@ function writeHostLog(message: string): void {
 
 function setPiStatus(text: string): void {
   piStatus.textContent = text;
+}
+
+function setPiLockedState(message: string): void {
+  piPanel.classList.remove("pi-panel--active");
+  piPanel.classList.add("pi-panel--locked");
+  piLockMessage.textContent = message;
+  piLockOverlay.removeAttribute("hidden");
+}
+
+function setPiActiveState(): void {
+  piPanel.classList.remove("pi-panel--locked");
+  piPanel.classList.add("pi-panel--active");
+  piLockOverlay.setAttribute("hidden", "true");
 }
 
 const targetUrl = runtimeUrl("index.html");
@@ -528,7 +545,11 @@ const coordinator = createBrowserTargetCoordinator({
   log: writeHostLog,
 });
 
-let workspace: BrowserWorkspace;
+let workspace: BrowserWorkspace | null = null;
+let settingsManager: SettingsManager;
+let sessionManager: SessionManager;
+let piRuntimeGeneration = 0;
+let interactiveModeRunning = false;
 
 async function refreshHostStatus(): Promise<void> {
   hostStatus.textContent = JSON.stringify(await coordinator.status(), null, 2);
@@ -544,26 +565,119 @@ async function runHostAction(label: string, callback: () => Promise<unknown>): P
   await refreshHostStatus();
 }
 
+function createAgent(): Agent {
+  return new Agent({
+    initialState: {
+      systemPrompt:
+        "You are Pi running in a browser MVP. Prefer using tools when useful so the UI can render tool calls.",
+      model: currentModel,
+      thinkingLevel: "off",
+      tools: [],
+    },
+    getApiKey(provider) {
+      if (provider === currentModel.provider && currentConfig.apiKey.length > 0) {
+        return currentConfig.apiKey;
+      }
+      return undefined;
+    },
+  });
+}
+
+function lockPiSession(reason: string): void {
+  piRuntimeGeneration += 1;
+  activeSession = null;
+  workspace = null;
+  (window as Window & { __piBrowserWorkspace?: BrowserWorkspace | null }).__piBrowserWorkspace = null;
+  webTerminal.stop();
+  interactiveModeRunning = false;
+  setPiLockedState(reason);
+  setPiStatus("Waiting for TIC-80");
+  writeHostLog(`Pi locked: ${reason}`);
+}
+
+async function initializePiFromActiveTic80(): Promise<void> {
+  if (!tic80Controller) {
+    throw new Error("Cannot initialize Pi without an active TIC-80 controller.");
+  }
+
+  if (interactiveModeRunning) {
+    lockPiSession("Reinitializing Pi for a new TIC-80 session.");
+  }
+
+  const generation = ++piRuntimeGeneration;
+  const nextWorkspace = await BrowserWorkspace.create(new McpFs(tic80Controller.callTool.bind(tic80Controller)), [
+    tic80ctlCommand,
+  ]);
+  await installBundledTic80ctlSkill(nextWorkspace);
+  await installBundledTic80LintExtension(nextWorkspace);
+
+  workspace = nextWorkspace;
+  (window as Window & { __piBrowserWorkspace?: BrowserWorkspace | null }).__piBrowserWorkspace = nextWorkspace;
+
+  const browserTools = createBrowserTools(nextWorkspace);
+  const resourceLoader = createBrowserResourceLoader();
+  await resourceLoader.reload();
+
+  const session = new AgentSession({
+    agent: createAgent(),
+    sessionManager,
+    settingsManager,
+    cwd: BROWSER_WORKSPACE_CWD,
+    resourceLoader,
+    customTools: [],
+    modelRegistry: browserModelRegistry as unknown as ModelRegistry,
+    baseToolsOverride: browserTools,
+    initialActiveToolNames: ["read", "bash", "write", "edit"],
+  });
+
+  activeSession = session;
+
+  const runtime = new BrowserRuntimeHost(session);
+  const interactiveMode = new InteractiveMode(runtime as never, {
+    terminal: webTerminal,
+    verbose: true,
+  });
+
+  webTerminal.stop();
+  webTerminal.clearScreen();
+  setPiActiveState();
+  setPiStatus(`Connected to TIC-80 with ${describeModel(currentModel)}.`);
+  writeHostLog("Pi enabled on MCP-backed TIC-80 session.");
+
+  interactiveModeRunning = true;
+
+  void interactiveMode
+    .run()
+    .catch((error) => {
+      if (piRuntimeGeneration !== generation) {
+        return;
+      }
+      setPiStatus(error instanceof Error ? error.message : String(error));
+      writeHostLog(`Pi interactive mode failed: ${error instanceof Error ? error.message : String(error)}`);
+    })
+    .finally(() => {
+      if (piRuntimeGeneration !== generation) {
+        return;
+      }
+      interactiveModeRunning = false;
+    });
+}
+
 async function startAndBindFs(kind: "iframe" | "popup"): Promise<unknown> {
   const result = await coordinator.start(kind);
   if (result && (result as { exitCode?: number }).exitCode !== 0) {
-    writeHostLog(`Start failed (exit=${(result as { exitCode?: number }).exitCode}). Keeping in-memory filesystem.`);
+    writeHostLog(`Start failed (exit=${(result as { exitCode?: number }).exitCode}). Pi remains locked.`);
+    lockPiSession("TIC-80 failed to start. Fix the session and try again.");
     return result;
   }
-  if (tic80Controller) {
-    workspace.setFs(new McpFs(tic80Controller.callTool.bind(tic80Controller)));
-    await installBundledTic80ctlSkill(workspace);
-    writeHostLog(`Switched workspace to MCP-backed filesystem (TIC-80 ${kind}) and reinstalled bundled skills.`);
-  }
+
+  await initializePiFromActiveTic80();
   return result;
 }
 
 async function stopAndResetFs(): Promise<void> {
   await coordinator.stop();
-  const fallback = createDefaultFs();
-  workspace.setFs(fallback);
-  await installBundledTic80ctlSkill(workspace);
-  writeHostLog("Switched workspace back to in-memory fallback and reinstalled bundled skills.");
+  lockPiSession("TIC-80 session ended. Start a new session to enable Pi again.");
 }
 
 const tic80ctlRunner: Tic80CtlRunner = {
@@ -574,13 +688,14 @@ const tic80ctlRunner: Tic80CtlRunner = {
     return coordinator.status();
   },
   async startAndBind(kind: "iframe" | "popup") {
-    const result = await startAndBindFs(kind);
-    await refreshHostStatus();
-    return result;
+    return {
+      stdout: `tic80ctl: session already active (locked-session mode, ${kind}).\n`,
+      stderr: "",
+      exitCode: 0,
+    };
   },
   async stopAndReset() {
-    await stopAndResetFs();
-    await refreshHostStatus();
+    throw new Error("tic80ctl: stop is disabled in locked-session mode. Use the host UI to end the TIC-80 session.");
   },
 };
 
@@ -699,7 +814,7 @@ async function applyConfig(config: BrowserConfig): Promise<void> {
   saveConfig(config);
 
   if (!activeSession) {
-    setPiStatus(`Configured ${describeModel(nextModel)}.`);
+    setPiStatus(`Configured ${describeModel(nextModel)}. Start TIC-80 to enable Pi.`);
     return;
   }
 
@@ -749,63 +864,21 @@ async function main(): Promise<void> {
     process.env.PI_OFFLINE = "1";
   }
 
-  await refreshHostStatus();
-  writeHostLog(`Loaded combined browser host. Runtime base: ${runtimeBaseUrl.toString()}`);
-
-  setPiStatus("Initializing InteractiveMode...");
-  await webTerminal.ready;
-
-  workspace = await BrowserWorkspace.create(undefined, [tic80ctlCommand]);
-  await installBundledTic80ctlSkill(workspace);
-  (window as Window & { __piBrowserWorkspace?: BrowserWorkspace }).__piBrowserWorkspace = workspace;
-  const browserTools = createBrowserTools(workspace);
-  const resourceLoader = createBrowserResourceLoader();
-
-  const settingsManager = SettingsManager.inMemory({
+  settingsManager = SettingsManager.inMemory({
     quietStartup: false,
     compaction: { enabled: false },
     retry: { enabled: false },
     theme: "dark",
   });
-  const sessionManager = SessionManager.inMemory(BROWSER_WORKSPACE_CWD);
+  sessionManager = SessionManager.inMemory(BROWSER_WORKSPACE_CWD);
 
-  const agent = new Agent({
-    initialState: {
-      systemPrompt:
-        "You are Pi running in a browser MVP. Prefer using tools when useful so the UI can render tool calls.",
-      model: currentModel,
-      thinkingLevel: "off",
-      tools: [],
-    },
-    getApiKey(provider) {
-      if (provider === currentModel.provider && currentConfig.apiKey.length > 0) {
-        return currentConfig.apiKey;
-      }
-      return undefined;
-    },
-  });
+  setPiLockedState("Start a TIC-80 iframe or popup session to enable the Pi TUI.");
+  setPiStatus("Waiting for TIC-80");
 
-  const session = new AgentSession({
-    agent,
-    sessionManager,
-    settingsManager,
-    cwd: BROWSER_WORKSPACE_CWD,
-    resourceLoader,
-    customTools: [],
-    modelRegistry: browserModelRegistry as unknown as ModelRegistry,
-    baseToolsOverride: browserTools,
-    initialActiveToolNames: ["read", "bash", "write", "edit"],
-  });
-  activeSession = session;
+  await refreshHostStatus();
+  writeHostLog(`Loaded combined browser host. Runtime base: ${runtimeBaseUrl.toString()}`);
 
-  const runtime = new BrowserRuntimeHost(session);
-  const interactiveMode = new InteractiveMode(runtime as never, {
-    terminal: webTerminal,
-    verbose: true,
-  });
-
-  setPiStatus(`InteractiveMode running with ${describeModel(currentModel)}.`);
-  await interactiveMode.run();
+  await webTerminal.ready;
 }
 
 main().catch((error) => {
