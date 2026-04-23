@@ -23,7 +23,7 @@ import { InteractiveMode } from "../../../../pi-mono/packages/coding-agent/src/m
 
 import { createBrowserResourceLoader } from "./browser-resource-loader.js";
 import { BROWSER_WORKSPACE_CWD, BrowserWorkspace } from "./browser-workspace.js";
-import { installBundledTic80LintExtension } from "./bundled-extension.js";
+import { installBundledExtensions } from "./bundled-extension.js";
 import { installBundledTic80ctlSkill } from "./bundled-skill.js";
 import { McpFs } from "./mcp-fs.js";
 import { createTic80ctlCommand, type Tic80CtlRunner } from "./tic80ctl-commands.js";
@@ -616,7 +616,7 @@ async function initializePiFromActiveTic80(): Promise<void> {
     tic80ctlCommand,
   ]);
   await installBundledTic80ctlSkill(nextWorkspace);
-  await installBundledTic80LintExtension(nextWorkspace);
+  await installBundledExtensions(nextWorkspace);
 
   workspace = nextWorkspace;
   (window as Window & { __piBrowserWorkspace?: BrowserWorkspace | null }).__piBrowserWorkspace = nextWorkspace;

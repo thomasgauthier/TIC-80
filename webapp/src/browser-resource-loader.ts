@@ -1,10 +1,12 @@
 import { createEventBus } from "../../../../pi-mono/packages/coding-agent/src/core/event-bus.js";
 import type { ResourceLoader } from "../../../../pi-mono/packages/coding-agent/src/core/resource-loader.js";
 
-import { bundledTic80LintExtensionFactory } from "./bundled-extension-runtime.js";
-import { bundledTic80LintExtensionSourceInfo, BUNDLED_TIC80_LINT_EXTENSION_PATH } from "./bundled-extension.js";
+import { bundledExtensionFactories } from "./bundled-extension-runtime.js";
+import { bundledExtensionFiles } from "./bundled-extension.js";
 import { bundledTic80ctlUsageSkill } from "./bundled-skill.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "./shims/browser-extensions.js";
+
+const bundledExtensionSourceInfoByPath = new Map(bundledExtensionFiles.map((file) => [file.path, file.sourceInfo]));
 
 class BrowserResourceLoader implements ResourceLoader {
 	private extensionsResult = {
@@ -16,32 +18,27 @@ class BrowserResourceLoader implements ResourceLoader {
 	async reload(): Promise<void> {
 		const runtime = createExtensionRuntime();
 		const eventBus = createEventBus();
-		try {
-			const extension = await loadExtensionFromFactory(
-				bundledTic80LintExtensionFactory,
-				BUNDLED_TIC80_LINT_EXTENSION_PATH,
-				"/workspace",
-				runtime,
-				eventBus,
-			);
-			extension.sourceInfo = bundledTic80LintExtensionSourceInfo;
-			this.extensionsResult = {
-				extensions: [extension],
-				errors: [],
-				runtime,
-			};
-		} catch (error) {
-			this.extensionsResult = {
-				extensions: [],
-				errors: [
-					{
-						path: BUNDLED_TIC80_LINT_EXTENSION_PATH,
-						error: error instanceof Error ? error.message : String(error),
-					},
-				],
-				runtime,
-			};
+		const extensions = [] as any[];
+		const errors = [] as Array<{ path: string; error: string }>;
+
+		for (const entry of bundledExtensionFactories) {
+			try {
+				const extension = await loadExtensionFromFactory(entry.factory, entry.path, "/workspace", runtime, eventBus);
+				extension.sourceInfo = bundledExtensionSourceInfoByPath.get(entry.path) ?? extension.sourceInfo;
+				extensions.push(extension);
+			} catch (error) {
+				errors.push({
+					path: entry.path,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
+
+		this.extensionsResult = {
+			extensions,
+			errors,
+			runtime,
+		};
 	}
 
 	getExtensions() {
