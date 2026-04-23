@@ -133,6 +133,10 @@ HELP_PLAYTEST_LINT_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$
 printf '%s\n' "$HELP_PLAYTEST_LINT_OUT" | grep -q '^tic80ctl lint-playtest-script <file>$'
 printf '%s\n' "$HELP_PLAYTEST_LINT_OUT" | grep -q 'Validate a Lua playtest episode script offline'
 
+HELP_LUA_AUTO_OUT="$(TIC80CTL_STATE_DIR="$STATE_DIR" TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" help lint-lua-auto)"
+printf '%s\n' "$HELP_LUA_AUTO_OUT" | grep -q '^tic80ctl lint-lua-auto <file>$'
+printf '%s\n' "$HELP_LUA_AUTO_OUT" | grep -q 'Detect whether a Lua file looks like a TIC-80 script cart or a playtest episode script'
+
 LINT_OK_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_OK_CART")"
 printf '%s\n' "$LINT_OK_OUT" | grep -q "^lint ok: $LINT_OK_CART$"
 
@@ -147,6 +151,12 @@ printf '%s\n' "$PLAYTEST_LINT_OK_JSON" | jq -e '.ok == true and .kind == "playte
 
 PLAYTEST_LINT_HEURISTIC_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_HEURISTIC_PLAYTEST")"
 printf '%s\n' "$PLAYTEST_LINT_HEURISTIC_OUT" | grep -q 'heuristic playtest script'
+
+LINT_AUTO_CART_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-lua-auto "$LINT_OK_CART")"
+printf '%s\n' "$LINT_AUTO_CART_JSON" | jq -e '.ok == true and .kind == "script_cart" and .subcommand == "lint-cart" and .reason == "script-cart header `-- script:`"' >/dev/null
+
+LINT_AUTO_PLAYTEST_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-lua-auto "$LINT_OK_PLAYTEST")"
+printf '%s\n' "$LINT_AUTO_PLAYTEST_JSON" | jq -e '.ok == true and .kind == "playtest_script" and .subcommand == "lint-playtest-script" and .reason == "explicit `-- tic80ctl: playtest-script` marker"' >/dev/null
 
 set +e
 LINT_BAD_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-cart "$LINT_BAD_CART" 2>&1)"
@@ -176,6 +186,13 @@ PLAYTEST_LINT_BAD_STATUS=$?
 set -e
 [ "$PLAYTEST_LINT_BAD_STATUS" -ne 0 ]
 printf '%s\n' "$PLAYTEST_LINT_BAD_OUT" | grep -q 'uses set_input() but never calls frameadvance()'
+
+set +e
+LINT_AUTO_BAD_PLAYTEST_JSON="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" --json lint-lua-auto "$LINT_BAD_PLAYTEST" 2>&1)"
+LINT_AUTO_BAD_PLAYTEST_STATUS=$?
+set -e
+[ "$LINT_AUTO_BAD_PLAYTEST_STATUS" -ne 0 ]
+printf '%s\n' "$LINT_AUTO_BAD_PLAYTEST_JSON" | jq -e '.ok == false and .kind == "playtest_script" and .subcommand == "lint-playtest-script" and (.message | contains("uses set_input() but never calls frameadvance()"))' >/dev/null
 
 set +e
 PLAYTEST_LINT_CART_OUT="$(TIC80CTL_BIN="$BIN" "$ROOT/tic80ctl" lint-playtest-script "$LINT_OK_CART" 2>&1)"

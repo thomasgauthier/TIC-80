@@ -6,13 +6,6 @@ const MAX_BASH_LINT_FILES = 20;
 const SNAPSHOT_IGNORED_DIRS = new Set([".git", "node_modules", ".pi", ".local", "playtest"]);
 const bashSnapshots = new Map<string, Map<string, string>>();
 
-const PLAYTEST_MARKER_RE = /^\s*--\s*tic80ctl:\s*playtest-script\s*$/i;
-const SCRIPT_CART_HEADER_RE = /^\s*--\s*script:\s*/im;
-const SCRIPT_CART_SECTION_RE = /^\s*--\s*<\/?[A-Z0-9]+>\s*$/m;
-const CART_CALLBACK_RE = /^\s*function\s+(TIC|BOOT|SCN|OVR|BDR|MENU)\s*\(/m;
-const PLAYTEST_COMMENT_RE = /^\s*--\s*playtest script\b/im;
-const PLAYTEST_API_RE = /\b(frameadvance|set_input|end_episode|log)\s*\(/;
-
 function isLuaPath(filePath: unknown): filePath is string {
 	return typeof filePath === "string" && filePath.endsWith(".lua");
 }
@@ -36,19 +29,6 @@ function summarizeForNotification(title: string, output: string): string {
 function normalizeRelative(cwd: string, filePath: string): string {
 	const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 	return path.relative(cwd, absolutePath) || path.basename(absolutePath);
-}
-
-function resolveFsPath(ctx: any, filePath: string): string {
-	if (!ctx?.fs || typeof ctx.fs.resolvePath !== "function") {
-		throw new Error("tic80ctl lint extension requires ctx.fs.resolvePath()");
-	}
-	return ctx.fs.resolvePath(ctx.cwd, filePath);
-}
-
-async function readUtf8(fs: any, filePath: string): Promise<string> {
-	const value = await fs.readFile(filePath, "utf8");
-	if (typeof value === "string") return value;
-	return new TextDecoder().decode(value);
 }
 
 async function lstatSafe(fs: any, filePath: string): Promise<any | null> {
@@ -151,124 +131,14 @@ function diffLuaSnapshots(before: Map<string, string>, after: Map<string, string
 	return changes.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function detectPlaytestMarker(text: string): boolean {
-	let nonEmpty = 0;
-	for (const line of text.split(/\r?\n/)) {
-		if (line.trim().length === 0) continue;
-		nonEmpty += 1;
-		if (PLAYTEST_MARKER_RE.test(line)) return true;
-		if (nonEmpty >= 8) break;
-	}
-	return false;
+function lintLabel(subcommand: "lint-cart" | "lint-playtest-script" | "lint-lua-auto"): string {
+	if (subcommand === "lint-cart") return "tic80ctl lint-cart";
+	if (subcommand === "lint-playtest-script") return "tic80ctl lint-playtest-script";
+	return "tic80ctl lint-lua-auto";
 }
 
-function pathLooksLikePlaytest(filePath: string): boolean {
-	const normalized = filePath.replace(/\\/g, "/").toLowerCase();
-	const base = path.basename(normalized);
-	if (/\/playtest\/episode_[^/]+\/script\.lua$/.test(normalized)) return true;
-	if (base.startsWith("playtest")) return true;
-	if (base.startsWith("episode")) return true;
-	if (base.endsWith("_episode.lua")) return true;
-	return false;
-}
-
-function classifyLuaText(filePath: string, text: string) {
-	const explicitPlaytest = detectPlaytestMarker(text);
-	const hasCartHeader = SCRIPT_CART_HEADER_RE.test(text);
-	const hasCartSection = SCRIPT_CART_SECTION_RE.test(text);
-	const cartCallback = CART_CALLBACK_RE.exec(text);
-	const hasPlaytestComment = PLAYTEST_COMMENT_RE.test(text);
-	const hasPlaytestApi = PLAYTEST_API_RE.test(text);
-	const playtestByPath = pathLooksLikePlaytest(filePath);
-
-	if (explicitPlaytest) {
-		return {
-			kind: "playtest_script" as const,
-			subcommand: "lint-playtest-script" as const,
-			reason: "explicit `-- tic80ctl: playtest-script` marker",
-		};
-	}
-
-	if (hasCartHeader) {
-		return {
-			kind: "script_cart" as const,
-			subcommand: "lint-cart" as const,
-			reason: "script-cart header `-- script:`",
-		};
-	}
-
-	if (hasCartSection) {
-		return {
-			kind: "script_cart" as const,
-			subcommand: "lint-cart" as const,
-			reason: "tagged TIC-80 cart section like `<PALETTE>`",
-		};
-	}
-
-	if (cartCallback) {
-		return {
-			kind: "script_cart" as const,
-			subcommand: "lint-cart" as const,
-			reason: `cart callback function ${cartCallback[1]}()`,
-		};
-	}
-
-	if (hasPlaytestApi) {
-		return {
-			kind: "playtest_script" as const,
-			subcommand: "lint-playtest-script" as const,
-			reason: "playtest API call like frameadvance()/set_input()/end_episode()/log()",
-		};
-	}
-
-	if (playtestByPath && hasPlaytestComment) {
-		return {
-			kind: "playtest_script" as const,
-			subcommand: "lint-playtest-script" as const,
-			reason: "playtest-oriented filename plus playtest comment",
-		};
-	}
-
-	if (playtestByPath) {
-		return {
-			kind: "playtest_script" as const,
-			subcommand: "lint-playtest-script" as const,
-			reason: "playtest-oriented filename",
-		};
-	}
-
-	return {
-		kind: "script_cart" as const,
-		subcommand: "lint-cart" as const,
-		reason: "defaulted to cart lint",
-	};
-}
-
-async function classifyLuaFile(ctx: any, filePath: string, absolutePath: string) {
-	try {
-		const text = await readUtf8(ctx.fs, absolutePath);
-		return {
-			path: filePath,
-			absolutePath,
-			...classifyLuaText(filePath, text),
-		};
-	} catch {
-		return {
-			path: filePath,
-			absolutePath,
-			kind: "script_cart" as const,
-			subcommand: "lint-cart" as const,
-			reason: "failed to read file for classification; defaulted to cart lint",
-		};
-	}
-}
-
-function lintLabel(subcommand: "lint-cart" | "lint-playtest-script"): string {
-	return subcommand === "lint-cart" ? "tic80ctl lint-cart" : "tic80ctl lint-playtest-script";
-}
-
-async function checkTic80ctlLintCommand(pi: any, subcommand: "lint-cart" | "lint-playtest-script") {
-	const supports = await pi.exec("bash", ["-lc", `tic80ctl help ${JSON.stringify(subcommand)} >/dev/null 2>&1`]);
+async function checkTic80ctlLintCommand(pi: any) {
+	const supports = await pi.exec("bash", ["-lc", "tic80ctl help lint-lua-auto >/dev/null 2>&1"]);
 	if (supports.code === 0) return "ready" as const;
 
 	const exists = await pi.exec("bash", ["-lc", "tic80ctl --help >/dev/null 2>&1"]);
@@ -277,31 +147,59 @@ async function checkTic80ctlLintCommand(pi: any, subcommand: "lint-cart" | "lint
 	return "missing" as const;
 }
 
-async function runTic80ctlLint(
-	pi: any,
-	cwd: string,
-	filePath: string,
-	subcommand: "lint-cart" | "lint-playtest-script",
-	kind: "script_cart" | "playtest_script",
-) {
+async function runTic80ctlAutoLint(pi: any, cwd: string, filePath: string) {
 	const lint = await pi.exec("bash", [
 		"-lc",
-		`cd ${JSON.stringify(cwd)} && tic80ctl ${subcommand} ${JSON.stringify(filePath)}`,
+		`cd ${JSON.stringify(cwd)} && tic80ctl --json lint-lua-auto ${JSON.stringify(filePath)}`,
 	]);
 	const stdout = lint.stdout?.trim() ?? "";
 	const stderr = lint.stderr?.trim() ?? "";
 	const rawOutput = [stdout, stderr].filter(Boolean).join("\n");
 
-	return {
-		file: filePath,
-		subcommand,
-		kind,
-		ok: lint.code === 0,
-		exitCode: lint.code,
-		stdout,
-		stderr,
-		output: rawOutput || `(tic80ctl ${subcommand} exited ${lint.code} with no output)`,
-	};
+	try {
+		const payload = JSON.parse(stdout || "{}");
+		const subcommand =
+			payload.subcommand === "lint-playtest-script"
+				? ("lint-playtest-script" as const)
+				: payload.subcommand === "lint-cart"
+					? ("lint-cart" as const)
+					: ("lint-lua-auto" as const);
+		const kind = payload.kind === "playtest_script" ? ("playtest_script" as const) : ("script_cart" as const);
+		const message = typeof payload.message === "string" && payload.message.length > 0 ? payload.message : lint.code === 0 ? "lint ok" : "lint failed";
+		const line = typeof payload.line === "number" ? payload.line : undefined;
+		const renderedOutput = lint.code === 0
+			? `lint ok: ${filePath}`
+			: line !== undefined
+				? `lint failed: ${filePath}:${line}: ${message}`
+				: `lint failed: ${filePath}: ${message}`;
+		return {
+			file: filePath,
+			subcommand,
+			kind,
+			reason: typeof payload.reason === "string" && payload.reason.length > 0 ? payload.reason : "defaulted to cart lint",
+			ok: lint.code === 0 && payload.ok !== false,
+			exitCode: lint.code,
+			stdout,
+			stderr,
+			message,
+			line,
+			output: renderedOutput,
+		};
+	} catch {
+		return {
+			file: filePath,
+			subcommand: "lint-lua-auto" as const,
+			kind: "script_cart" as const,
+			reason: "tic80ctl returned non-JSON output; classification unavailable",
+			ok: false,
+			exitCode: lint.code,
+			stdout,
+			stderr,
+			message: "failed to parse tic80ctl lint-lua-auto JSON output",
+			line: undefined,
+			output: rawOutput || "failed to parse tic80ctl lint-lua-auto JSON output",
+		};
+	}
 }
 
 function severityRank(level: "info" | "warning" | "error"): number {
@@ -317,9 +215,9 @@ function mergeDetails(event: any, extra: Record<string, unknown>) {
 	};
 }
 
-async function buildLintGroupSummary(pi: any, cwd: string, classifiedFiles: any[], reason: string) {
-	const firstFile = classifiedFiles[0];
-	if (!firstFile) {
+function buildLintGroupSummary(results: any[], reason: string) {
+	const firstResult = results[0];
+	if (!firstResult) {
 		return {
 			content: [],
 			details: { files: [], trigger: reason },
@@ -328,71 +226,25 @@ async function buildLintGroupSummary(pi: any, cwd: string, classifiedFiles: any[
 		};
 	}
 
-	const subcommand = firstFile.subcommand;
-	const filesText = classifiedFiles.map((file) => file.path).join(", ");
+	const subcommand = firstResult.subcommand;
+	const filesText = results.map((result) => result.file).join(", ");
 	const label = lintLabel(subcommand);
-	const availability = await checkTic80ctlLintCommand(pi, subcommand);
-
-	if (availability === "missing") {
-		return {
-			content: [
-				{
-					type: "text" as const,
-					text: `\n\n[${label}] Skipped lint for ${filesText}: tic80ctl is not installed or not on PATH.`,
-				},
-			],
-			details: {
-				subcommand,
-				skipped: true,
-				reason: "tic80ctl not installed",
-				files: classifiedFiles,
-				trigger: reason,
-			},
-			notifyMessage: `[${label}] skipped ${filesText} (tic80ctl not installed)`,
-			notifyLevel: "warning" as const,
-		};
-	}
-
-	if (availability === "unsupported") {
-		return {
-			content: [
-				{
-					type: "text" as const,
-					text: `\n\n[${label}] Skipped lint for ${filesText}: installed tic80ctl does not support \`${subcommand}\`.`,
-				},
-			],
-			details: {
-				subcommand,
-				skipped: true,
-				reason: `${subcommand} unsupported`,
-				files: classifiedFiles,
-				trigger: reason,
-			},
-			notifyMessage: `[${label}] skipped ${filesText} (${subcommand} unsupported)`,
-			notifyLevel: "warning" as const,
-		};
-	}
-
-	const results = [];
-	for (const file of classifiedFiles) {
-		results.push(await runTic80ctlLint(pi, cwd, file.path, file.subcommand, file.kind));
-	}
-
 	const failures = results.filter((result) => !result.ok);
+
 	if (failures.length === 0) {
 		return {
 			content: [
 				{
 					type: "text" as const,
 					text:
-						subcommand === "lint-cart"
-							? `\n\n[${label}] No TIC-80 cart-structure issues in ${filesText}.`
-							: `\n\n[${label}] No playtest-script issues in ${filesText}.`,
+						subcommand === "lint-playtest-script"
+							? `\n\n[${label}] No playtest-script issues in ${filesText}.`
+							: `\n\n[${label}] No TIC-80 cart-structure issues in ${filesText}.`,
 				},
 			],
 			details: {
 				subcommand,
-				files: classifiedFiles,
+				files: results,
 				ok: true,
 				results,
 				trigger: reason,
@@ -402,25 +254,21 @@ async function buildLintGroupSummary(pi: any, cwd: string, classifiedFiles: any[
 		};
 	}
 
-	const output = truncate(
-		failures
-			.map((result) => `${result.file}\n${result.output}`)
-			.join("\n\n"),
-	);
+	const output = truncate(failures.map((result) => result.output).join("\n\n"));
 
 	return {
 		content: [
 			{
 				type: "text" as const,
 				text:
-					subcommand === "lint-cart"
-						? `\n\n[${label}] TIC-80 cart-structure issues in ${filesText}:\n${output}`
-						: `\n\n[${label}] Playtest-script issues in ${filesText}:\n${output}`,
+					subcommand === "lint-playtest-script"
+						? `\n\n[${label}] Playtest-script issues in ${filesText}:\n${output}`
+						: `\n\n[${label}] TIC-80 cart-structure issues in ${filesText}:\n${output}`,
 			},
 		],
 		details: {
 			subcommand,
-			files: classifiedFiles,
+			files: results,
 			ok: false,
 			results,
 			trigger: reason,
@@ -432,29 +280,72 @@ async function buildLintGroupSummary(pi: any, cwd: string, classifiedFiles: any[
 }
 
 async function buildTic80LintSummary(pi: any, ctx: any, filePaths: string[], reason: string) {
-	const classified = await Promise.all(
-		filePaths.map(async (filePath) => {
-			const absolutePath = resolveFsPath(ctx, filePath);
-			return classifyLuaFile(ctx, filePath, absolutePath);
-		}),
-	);
+	const availability = await checkTic80ctlLintCommand(pi);
+	if (availability === "missing") {
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `\n\n[tic80ctl lint-lua-auto] Skipped lint for ${filePaths.join(", ")}: tic80ctl is not installed or not on PATH.`,
+				},
+			],
+			details: {
+				tic80ctlLint: {
+					files: [],
+					trigger: reason,
+					skipped: true,
+					reason: "tic80ctl not installed",
+				},
+			},
+			isError: false,
+			notifyMessage: `[tic80ctl lint-lua-auto] skipped ${filePaths.join(", ")} (tic80ctl not installed)`,
+			notifyLevel: "warning" as const,
+		};
+	}
+
+	if (availability === "unsupported") {
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `\n\n[tic80ctl lint-lua-auto] Skipped lint for ${filePaths.join(", ")}: installed tic80ctl does not support \`lint-lua-auto\`.`,
+				},
+			],
+			details: {
+				tic80ctlLint: {
+					files: [],
+					trigger: reason,
+					skipped: true,
+					reason: "lint-lua-auto unsupported",
+				},
+			},
+			isError: false,
+			notifyMessage: `[tic80ctl lint-lua-auto] skipped ${filePaths.join(", ")} (lint-lua-auto unsupported)`,
+			notifyLevel: "warning" as const,
+		};
+	}
+
+	const results = [];
+	for (const filePath of filePaths) {
+		results.push(await runTic80ctlAutoLint(pi, ctx.cwd, filePath));
+	}
 
 	const groups = new Map<string, any[]>();
-	for (const file of classified) {
-		const bucket = groups.get(file.subcommand) ?? [];
-		bucket.push(file);
-		groups.set(file.subcommand, bucket);
+	for (const result of results) {
+		const bucket = groups.get(result.subcommand) ?? [];
+		bucket.push(result);
+		groups.set(result.subcommand, bucket);
 	}
 
 	const groupSummaries = [];
-	for (const subcommand of ["lint-cart", "lint-playtest-script"] as const) {
+	for (const subcommand of ["lint-cart", "lint-playtest-script", "lint-lua-auto"] as const) {
 		const files = groups.get(subcommand);
 		if (!files || files.length === 0) continue;
-		groupSummaries.push(await buildLintGroupSummary(pi, ctx.cwd, files, reason));
+		groupSummaries.push(buildLintGroupSummary(files, reason));
 	}
 
-	const classificationLines = classified
-		.map((file) => `${file.path}: ${file.kind} (${file.reason})`)
+	const classificationLines = results
+		.map((result) => `${result.file}: ${result.kind} (${result.reason})`)
 		.join("\n");
 
 	let notifyLevel: "info" | "warning" | "error" = "info";
@@ -479,7 +370,7 @@ async function buildTic80LintSummary(pi: any, ctx: any, filePaths: string[], rea
 		],
 		details: {
 			tic80ctlLint: {
-				files: classified,
+				files: results,
 				trigger: reason,
 				groups: groupSummaries.map((summary) => summary.details),
 			},

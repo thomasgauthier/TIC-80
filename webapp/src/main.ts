@@ -518,6 +518,13 @@ const coordinator = createBrowserTargetCoordinator({
   controllerFactory: async () => {
     tic80Controller = await createTic80CtlBrowser({
       coreModulePath: runtimeUrl("tic80ctl-browser-core.js"),
+      readTextFile: async (path: string) => {
+        if (!workspace) {
+          throw new Error(`Cannot read ${path}: Pi workspace not initialized`);
+        }
+        const resolved = path.startsWith("/") ? path : `/workspace/${path}`;
+        return await workspace.readFile(resolved);
+      },
     });
     return tic80Controller;
   },

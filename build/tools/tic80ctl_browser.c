@@ -64,6 +64,32 @@ typedef struct
     char message[512];
 } LintResult;
 
+typedef struct
+{
+    bool explicit_playtest_marker;
+    bool playtest_comment;
+    bool cart_header;
+    bool cart_section;
+    bool cart_callback;
+    bool frameadvance;
+    bool set_input;
+    bool log_call;
+    bool end_episode;
+    int cart_header_line;
+    int cart_section_line;
+    int cart_callback_line;
+    int set_input_line;
+    char cart_section_tag[32];
+    char cart_callback_name[16];
+} LuaLintSignals;
+
+typedef struct
+{
+    const char* kind;
+    const char* subcommand;
+    const char* reason;
+} LuaAutoLintDecision;
+
 static const char* usage_text =
     "usage: tic80ctl [--json] <command> [args...]\n"
     "\n"
@@ -89,6 +115,8 @@ static const char* help_text =
     "  lint-cart <file>  validate TIC-80 script-cart structure before load\n"
     "  lint-playtest-script <file>\n"
     "                    validate a Lua playtest episode script before use\n"
+    "  lint-lua-auto <file>\n"
+    "                    detect Lua file kind and run the right offline lint\n"
     "  load <cart>       load a cart or script cart into the active session\n"
     "  run               start the loaded cart\n"
     "  eval \"<expr>\"    run a short Lua expression in the active runtime\n"
@@ -626,7 +654,8 @@ static int print_help(const char* topic)
         && strcmp(topic, "screenshot") != 0 && strcmp(topic, "playtest") != 0
         && strcmp(topic, "sfx") != 0 && strcmp(topic, "music") != 0
         && strcmp(topic, "sprite") != 0 && strcmp(topic, "map") != 0
-        && strcmp(topic, "lint-cart") != 0 && strcmp(topic, "lint-playtest-script") != 0)
+        && strcmp(topic, "lint-cart") != 0 && strcmp(topic, "lint-playtest-script") != 0
+        && strcmp(topic, "lint-lua-auto") != 0)
     {
         err_printf("tic80ctl: unknown help topic: %s\n\n", topic);
         print_usage();
@@ -635,6 +664,128 @@ static int print_help(const char* topic)
 
     out_printf("%s", help_text);
     return 0;
+}
+
+static bool line_has_call(const char* line, const char* name);
+static bool line_has_cart_callback(const char* line, char* callback, size_t callback_size);
+static bool parse_tag_line(const char* line, const char* comment, bool* is_end_tag, char* tag, size_t tag_size);
+
+static bool line_matches_playtest_marker(const char* line)
+{
+    if(strncmp(line, "--", 2) != 0)
+        return false;
+
+    const char* start = skip_ws(line + 2);
+    size_t len = strlen(start);
+    while(len > 0)
+    {
+        char c = start[len - 1];
+        if(c != ' ' && c != '\t' && c != '\r')
+            break;
+        len--;
+    }
+
+    size_t marker_len = strlen(PlaytestScriptMarker);
+    return len == marker_len && strncasecmp(start, PlaytestScriptMarker, marker_len) == 0;
+}
+
+static void scan_lua_lint_signals(char* text, LuaLintSignals* signals)
+{
+    memset(signals, 0, sizeof(*signals));
+
+    int nonempty_lines = 0;
+    int line_no = 1;
+    for(char* line = text; line; line_no++)
+    {
+        char* next = strchr(line, '\n');
+        if(next) *next = '\0';
+
+        const char* trimmed = skip_ws(line);
+        if(*trimmed) nonempty_lines++;
+
+        if(*trimmed)
+        {
+            if(nonempty_lines <= 8 && line_matches_playtest_marker(trimmed))
+                signals->explicit_playtest_marker = true;
+
+            if(!signals->cart_header && strncmp(trimmed, "--", 2) == 0 && strncasecmp(skip_ws(trimmed + 2), "script:", 7) == 0)
+            {
+                signals->cart_header = true;
+                signals->cart_header_line = line_no;
+            }
+
+            if(!signals->playtest_comment && strncmp(trimmed, "--", 2) == 0 && strncasecmp(skip_ws(trimmed + 2), "playtest script", 15) == 0)
+                signals->playtest_comment = true;
+
+            if(!signals->cart_section)
+            {
+                bool is_end_tag = false;
+                if(parse_tag_line(trimmed, "--", &is_end_tag, signals->cart_section_tag, sizeof(signals->cart_section_tag)))
+                {
+                    signals->cart_section = true;
+                    signals->cart_section_line = line_no;
+                }
+            }
+
+            if(!signals->cart_callback && line_has_cart_callback(trimmed, signals->cart_callback_name, sizeof(signals->cart_callback_name)))
+            {
+                signals->cart_callback = true;
+                signals->cart_callback_line = line_no;
+            }
+
+            if(strncmp(trimmed, "--", 2) != 0)
+            {
+                if(!signals->frameadvance && line_has_call(trimmed, "frameadvance"))
+                    signals->frameadvance = true;
+                if(!signals->set_input && line_has_call(trimmed, "set_input"))
+                {
+                    signals->set_input = true;
+                    signals->set_input_line = line_no;
+                }
+                if(!signals->log_call && line_has_call(trimmed, "log"))
+                    signals->log_call = true;
+                if(!signals->end_episode && line_has_call(trimmed, "end_episode"))
+                    signals->end_episode = true;
+            }
+        }
+
+        if(!next) break;
+        line = next + 1;
+    }
+}
+
+static LuaAutoLintDecision classify_lua_auto(char* text)
+{
+    LuaLintSignals signals;
+    scan_lua_lint_signals(text, &signals);
+
+    if(signals.cart_header)
+        return (LuaAutoLintDecision){"script_cart", "lint-cart", "script-cart header `-- script:`"};
+
+    if(signals.cart_section)
+    {
+        static char reason[96];
+        snprintf(reason, sizeof(reason), "tagged TIC-80 cart section like <%s>", signals.cart_section_tag[0] ? signals.cart_section_tag : "...");
+        return (LuaAutoLintDecision){"script_cart", "lint-cart", reason};
+    }
+
+    if(signals.cart_callback)
+    {
+        static char reason[96];
+        snprintf(reason, sizeof(reason), "cart callback function %s()", signals.cart_callback_name[0] ? signals.cart_callback_name : "TIC");
+        return (LuaAutoLintDecision){"script_cart", "lint-cart", reason};
+    }
+
+    if(signals.explicit_playtest_marker)
+        return (LuaAutoLintDecision){"playtest_script", "lint-playtest-script", "explicit `-- tic80ctl: playtest-script` marker"};
+
+    if(signals.frameadvance || signals.set_input || signals.log_call || signals.end_episode)
+        return (LuaAutoLintDecision){"playtest_script", "lint-playtest-script", "playtest API call like frameadvance()/set_input()/end_episode()/log()"};
+
+    if(signals.playtest_comment)
+        return (LuaAutoLintDecision){"playtest_script", "lint-playtest-script", "playtest comment `-- playtest script`"};
+
+    return (LuaAutoLintDecision){"script_cart", "lint-cart", "defaulted to cart lint"};
 }
 
 static bool line_has_call(const char* line, const char* name)
@@ -992,103 +1143,30 @@ static bool lint_playtest_script_text(const char* path, char* text, LintResult* 
 
     strip_cr_chars(text);
 
-    bool explicit_marker = false;
-    bool saw_playtest_comment = false;
-    bool saw_cart_header = false;
-    bool saw_cart_section = false;
-    bool saw_cart_callback = false;
-    bool saw_frameadvance = false;
-    bool saw_set_input = false;
-    bool saw_log = false;
-    bool saw_end_episode = false;
-    int nonempty_lines = 0;
-    int cart_header_line = 0;
-    int cart_section_line = 0;
-    int cart_callback_line = 0;
-    int set_input_line = 0;
-    char cart_section_tag[32] = {0};
-    char cart_callback_name[16] = {0};
+    LuaLintSignals signals;
+    scan_lua_lint_signals(text, &signals);
 
-    int line_no = 1;
-    for(char* line = text; line; line_no++)
+    if(signals.cart_header)
     {
-        char* next = strchr(line, '\n');
-        if(next) *next = '\0';
-
-        const char* trimmed = skip_ws(line);
-        if(*trimmed) nonempty_lines++;
-
-        if(*trimmed)
-        {
-            if(nonempty_lines <= 8 && strncmp(trimmed, "--", 2) == 0 && strcasecmp(skip_ws(trimmed + 2), PlaytestScriptMarker) == 0)
-                explicit_marker = true;
-
-            if(!saw_cart_header && strncmp(trimmed, "--", 2) == 0 && strncasecmp(skip_ws(trimmed + 2), "script:", 7) == 0)
-            {
-                saw_cart_header = true;
-                cart_header_line = line_no;
-            }
-
-            if(!saw_playtest_comment && strncmp(trimmed, "--", 2) == 0 && strncasecmp(skip_ws(trimmed + 2), "playtest script", 15) == 0)
-                saw_playtest_comment = true;
-
-            if(!saw_cart_section)
-            {
-                bool is_end_tag = false;
-                if(parse_tag_line(trimmed, "--", &is_end_tag, cart_section_tag, sizeof(cart_section_tag)))
-                {
-                    saw_cart_section = true;
-                    cart_section_line = line_no;
-                }
-            }
-
-            if(!saw_cart_callback && line_has_cart_callback(trimmed, cart_callback_name, sizeof(cart_callback_name)))
-            {
-                saw_cart_callback = true;
-                cart_callback_line = line_no;
-            }
-
-            if(strncmp(trimmed, "--", 2) != 0)
-            {
-                if(!saw_frameadvance && line_has_call(trimmed, "frameadvance"))
-                    saw_frameadvance = true;
-                if(!saw_set_input && line_has_call(trimmed, "set_input"))
-                {
-                    saw_set_input = true;
-                    set_input_line = line_no;
-                }
-                if(!saw_log && line_has_call(trimmed, "log"))
-                    saw_log = true;
-                if(!saw_end_episode && line_has_call(trimmed, "end_episode"))
-                    saw_end_episode = true;
-            }
-        }
-
-        if(!next) break;
-        line = next + 1;
-    }
-
-    if(saw_cart_header)
-    {
-        set_lint_error(result, cart_header_line, "looks like a TIC-80 script cart");
+        set_lint_error(result, signals.cart_header_line, "looks like a TIC-80 script cart");
         return false;
     }
-    if(saw_cart_section)
+    if(signals.cart_section)
     {
-        set_lint_error(result, cart_section_line, "looks like a TIC-80 script cart section <%s>", cart_section_tag);
+        set_lint_error(result, signals.cart_section_line, "looks like a TIC-80 script cart section <%s>", signals.cart_section_tag);
         return false;
     }
-    if(saw_cart_callback)
+    if(signals.cart_callback)
     {
-        set_lint_error(result, cart_callback_line, "looks like a TIC-80 cart callback %s()", cart_callback_name);
+        set_lint_error(result, signals.cart_callback_line, "looks like a TIC-80 cart callback %s()", signals.cart_callback_name);
         return false;
     }
-    if(saw_set_input && !saw_frameadvance)
+    if(signals.set_input && !signals.frameadvance)
     {
-        set_lint_error(result, set_input_line, "uses set_input() but never frameadvance()");
+        set_lint_error(result, signals.set_input_line, "uses set_input() but never frameadvance()");
         return false;
     }
-    if(!explicit_marker && !saw_frameadvance && !saw_set_input && !saw_log && !saw_end_episode && !saw_playtest_comment)
+    if(!signals.explicit_playtest_marker && !signals.frameadvance && !signals.set_input && !signals.log_call && !signals.end_episode && !signals.playtest_comment)
     {
         set_lint_error(result, 1, "does not look like a TIC-80 playtest script");
         return false;
@@ -1112,6 +1190,30 @@ static int print_lint_json(const char* path, const LintResult* result, const cha
     if(result->line > 0) sb_appendf(&sb, ",\"line\":%d", result->line);
     sb_append(&sb, ",\"kind\":");
     sb_append_json_string(&sb, kind);
+    sb_append(&sb, "}\n");
+    out_printf("%s", sb.data ? sb.data : "{}\n");
+    sb_free(&sb);
+    return result->ok ? 0 : 1;
+}
+
+static int print_auto_lint_json(const char* path, const LintResult* result, const LuaAutoLintDecision* decision)
+{
+    StringBuilder sb;
+    sb_init(&sb);
+    sb_append(&sb, "{");
+    sb_append(&sb, "\"ok\":");
+    sb_append(&sb, result->ok ? "true" : "false");
+    sb_append(&sb, ",\"file\":");
+    sb_append_json_string(&sb, path ? path : "");
+    sb_append(&sb, ",\"message\":");
+    sb_append_json_string(&sb, result->message[0] ? result->message : (result->ok ? "lint ok" : "lint failed"));
+    if(result->line > 0) sb_appendf(&sb, ",\"line\":%d", result->line);
+    sb_append(&sb, ",\"kind\":");
+    sb_append_json_string(&sb, decision && decision->kind ? decision->kind : "script_cart");
+    sb_append(&sb, ",\"subcommand\":");
+    sb_append_json_string(&sb, decision && decision->subcommand ? decision->subcommand : "lint-cart");
+    sb_append(&sb, ",\"reason\":");
+    sb_append_json_string(&sb, decision && decision->reason ? decision->reason : "defaulted to cart lint");
     sb_append(&sb, "}\n");
     out_printf("%s", sb.data ? sb.data : "{}\n");
     sb_free(&sb);
@@ -1194,6 +1296,63 @@ static int lint_playtest_script_command(const char* path, bool json_output)
     if(ok)
     {
         out_printf("%s: %s\n", result.message[0] ? result.message : "lint ok", path);
+        return 0;
+    }
+    err_printf("lint failed: %s: %s\n", path, result.message);
+    return 1;
+}
+
+static int lint_lua_auto_command(const char* path, bool json_output)
+{
+    LuaAutoLintDecision fallback_decision = {"script_cart", "lint-cart", "defaulted to cart lint"};
+
+    if(!path || !path[0])
+    {
+        if(json_output)
+        {
+            LintResult result = {.ok = false, .line = 0};
+            snprintf(result.message, sizeof(result.message), "tic80ctl: lint-lua-auto requires a file path");
+            return print_auto_lint_json("", &result, &fallback_decision);
+        }
+        err_printf("tic80ctl: lint-lua-auto requires a file path\n");
+        return 1;
+    }
+
+    char error[512] = {0};
+    char* text = NULL;
+    if(!browser_read_text_file(path, &text, error, sizeof(error)))
+    {
+        LintResult result = {.ok = false, .line = 0};
+        LuaAutoLintDecision decision = {"script_cart", "lint-cart", "failed to read file for classification; defaulted to cart lint"};
+        snprintf(result.message, sizeof(result.message), "%s", error[0] ? error : "failed to read file");
+        if(json_output)
+            return print_auto_lint_json(path, &result, &decision);
+        err_printf("lint failed: %s: %s\n", path, result.message);
+        return 1;
+    }
+
+    char* classify_text = strdup(text);
+    LuaAutoLintDecision decision = fallback_decision;
+    if(classify_text)
+    {
+        strip_cr_chars(classify_text);
+        decision = classify_lua_auto(classify_text);
+        free(classify_text);
+    }
+
+    LintResult result;
+    bool ok = strcmp(decision.subcommand, "lint-playtest-script") == 0
+        ? lint_playtest_script_text(path, text, &result)
+        : lint_script_cart_text(path, text, &result);
+    free(text);
+
+    if(json_output)
+        return print_auto_lint_json(path, &result, &decision);
+
+    out_printf("detected kind: %s (%s via %s)\n", decision.kind, decision.reason, decision.subcommand);
+    if(ok)
+    {
+        out_printf("lint ok: %s\n", path);
         return 0;
     }
     err_printf("lint failed: %s: %s\n", path, result.message);
@@ -2394,6 +2553,8 @@ static int execute_cli(int argc, char** argv)
         return lint_cart_command(argc > 0 ? argv[0] : NULL, json_output);
     if(strcmp(subcommand, "lint-playtest-script") == 0)
         return lint_playtest_script_command(argc > 0 ? argv[0] : NULL, json_output);
+    if(strcmp(subcommand, "lint-lua-auto") == 0)
+        return lint_lua_auto_command(argc > 0 ? argv[0] : NULL, json_output);
 
     if(strcmp(subcommand, "load") == 0)
     {

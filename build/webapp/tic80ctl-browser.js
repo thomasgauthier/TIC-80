@@ -708,12 +708,12 @@ export async function createTic80CtlBrowser(options = {}) {
         openPopupTarget: async (...args) => await serialize(() => transport.openPopupTarget(...args)),
         initialize: async (...args) => await serialize(() => transport.initialize(...args)),
         request: async (...args) => await serialize(() => transport.request(...args)),
-        callTool: async (name, argumentsObject = {}) => await serialize(async () => {
+        callTool: async (name, argumentsObject = {}) => {
             const rawResponse = await transport.callTool(name, argumentsObject);
             return rawResponse && typeof rawResponse.result === "object"
                 ? rawResponse.result
                 : rawResponse;
-        }),
+        },
         run: async (argv) => await serialize(async () => {
             const { runCore } = await getCoreState();
             return await runCore(argv);
